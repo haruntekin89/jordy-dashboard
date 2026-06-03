@@ -337,60 +337,160 @@ with st.expander("⚙️ Besturing", expanded=True):
         time.sleep(1)
         st.rerun()
 
-# --- RECENTE GESPREKKEN (MET OPNAME) ---
+# --- GESPREKKEN-OVERZICHT (zoeken + filteren + opname afspelen) ---
 try:
     REC_BASE = st.secrets["RECORDINGS_URL"].rstrip("/")
     REC_TOKEN = st.secrets["RECORDINGS_TOKEN"]
 except Exception:
     REC_BASE, REC_TOKEN = "", ""
 
-with st.expander("🎙️ Recente gesprekken (met opname)", expanded=False):
+LOG_PAGE_SIZE = 25
+LOG_COLS = "name,phone,result,ended_reason,duration,ended_at,recording,vapi_analysis"
+
+
+def _fmt_duur(s):
     try:
-        res = supabase.table("leads").select(
-            "name,phone,result,ended_reason,duration,ended_at,recording"
-        ).not_.is_("recording", "null").order("ended_at", desc=True).limit(100).execute()
-        rec_rows = res.data or []
+        s = int(s or 0)
+        return f"{s // 60}:{s % 60:02d}"
+    except Exception:
+        return "0:00"
+
+
+with st.expander("🎙️ Gesprekken-overzicht", expanded=False):
+    # --- Filterbalk ---
+    fc1, fc2, fc3 = st.columns([2, 1, 1])
+    zoek = fc1.text_input("Zoek op naam of nummer", key="log_zoek",
+                          placeholder="bv. Jansen of laatste cijfers")
+    res_filter = fc2.selectbox("Resultaat",
+                               ["Alle", "✅ Succes", "❌ Mislukt", "📵 Geen gehoor"], key="log_res")
+    periode = fc3.selectbox("Periode",
+                            ["Laatste 7 dagen", "Vandaag", "Laatste 30 dagen", "Alles"], key="log_per")
+
+    # Paginanummer terugzetten als een filter wijzigt
+    filter_sig = f"{zoek}|{res_filter}|{periode}"
+    if st.session_state.get("log_filter_sig") != filter_sig:
+        st.session_state["log_filter_sig"] = filter_sig
+        st.session_state["log_page"] = 0
+    page = st.session_state.get("log_page", 0)
+
+    def _apply_filters(q):
+        vd = date.today()
+        if periode == "Vandaag":
+            q = q.gte("ended_at", f"{vd.isoformat()} 00:00:00")
+        elif periode == "Laatste 7 dagen":
+            q = q.gte("ended_at", f"{(vd - pd.Timedelta(days=6)).date().isoformat()} 00:00:00")
+        elif periode == "Laatste 30 dagen":
+            q = q.gte("ended_at", f"{(vd - pd.Timedelta(days=29)).date().isoformat()} 00:00:00")
+        if res_filter == "✅ Succes":
+            q = q.eq("result", "SUCCES")
+        elif res_filter == "❌ Mislukt":
+            q = q.eq("result", "MISLUKT")
+        elif res_filter == "📵 Geen gehoor":
+            q = q.in_("ended_reason", GEEN_GEHOOR_REDENEN)
+        z = re.sub(r"[^A-Za-z0-9]", "", zoek or "")
+        if z:
+            q = q.or_(f"phone.ilike.*{z}*,name.ilike.*{z}*")
+        return q
+
+    try:
+        totaal = _apply_filters(
+            supabase.table("leads").select(LOG_COLS, count="exact", head=True)
+            .not_.is_("ended_at", "null")
+        ).execute().count or 0
+        start = page * LOG_PAGE_SIZE
+        rows = _apply_filters(
+            supabase.table("leads").select(LOG_COLS).not_.is_("ended_at", "null")
+        ).order("ended_at", desc=True).range(start, start + LOG_PAGE_SIZE - 1).execute().data or []
     except Exception as e:
         st.error(f"Kan gesprekken niet ophalen: {e}")
-        rec_rows = []
+        rows, totaal = [], 0
 
-    if not rec_rows:
-        st.info("Nog geen gesprekken met opname.")
-    elif not (REC_BASE and REC_TOKEN):
-        st.warning("Opname-server niet geconfigureerd. Voeg `RECORDINGS_URL` en "
-                   "`RECORDINGS_TOKEN` toe aan de Streamlit-secrets.")
+    if totaal == 0:
+        st.info("Geen gesprekken gevonden voor deze filters.")
     else:
-        def _rec_label(r):
-            t = (r.get("ended_at") or "")[:16].replace("T", " ")
-            return f"{t} · {r.get('name','?')} · {r.get('phone','')} · {r.get('result','')}"
+        max_page = max(0, (totaal - 1) // LOG_PAGE_SIZE)
 
-        opties = {_rec_label(r): r for r in rec_rows}
-        keuze = st.selectbox(f"Kies een gesprek ({len(rec_rows)})", list(opties.keys()))
-        r = opties[keuze]
+        tabel = pd.DataFrame([{
+            "Datum/tijd": (r.get("ended_at") or "")[:16].replace("T", " "),
+            "Naam": r.get("name") or "",
+            "Nummer": r.get("phone") or "",
+            "Resultaat": r.get("result") or "",
+            "Reden": r.get("ended_reason") or "",
+            "Duur": _fmt_duur(r.get("duration")),
+            "🎙️": "✓" if r.get("recording") else "—",
+        } for r in rows])
 
-        cols = st.columns(4)
-        cols[0].metric("Resultaat", r.get("result") or "—")
-        cols[1].metric("Reden", r.get("ended_reason") or "—")
-        cols[2].metric("Duur", f"{r.get('duration') or 0}s")
-        cols[3].metric("Datum", (r.get("ended_at") or "")[:10] or "—")
+        seln = st.dataframe(
+            tabel, hide_index=True, use_container_width=True,
+            on_select="rerun", selection_mode="single-row", key=f"log_tabel_{page}",
+        )
 
-        rec = r.get("recording")
-        if rec:
-            try:
-                resp = requests.get(
-                    f"{REC_BASE}/recordings/{rec}",
-                    headers={"X-Recordings-Token": REC_TOKEN},
-                    timeout=20,
-                )
-                if resp.status_code == 200:
-                    st.audio(resp.content, format="audio/ogg")
-                else:
-                    st.caption(f"Opname niet beschikbaar (status {resp.status_code}) — "
-                               "mogelijk al verwijderd (opnames blijven 14 dagen).")
-            except Exception as e:
-                st.caption(f"Opname laden mislukt: {e}")
+        # Paginering
+        pc1, pc2, pc3 = st.columns([1, 2, 1])
+        if pc1.button("◀ vorige", disabled=(page <= 0), key="log_prev", use_container_width=True):
+            st.session_state["log_page"] = page - 1
+            st.rerun()
+        pc2.markdown(
+            f"<div style='text-align:center;color:#6b7280;padding-top:8px'>"
+            f"pagina {page + 1} / {max_page + 1} · {totaal} gesprekken</div>",
+            unsafe_allow_html=True,
+        )
+        if pc3.button("volgende ▶", disabled=(page >= max_page), key="log_next", use_container_width=True):
+            st.session_state["log_page"] = page + 1
+            st.rerun()
+
+        # --- Detailpaneel voor de geselecteerde rij ---
+        try:
+            sel_rows = list(seln.selection.rows)
+        except Exception:
+            sel_rows = []
+
+        if not sel_rows:
+            st.caption("👆 Klik op een rij om de opname en antwoorden te zien.")
         else:
-            st.caption("Geen opname voor dit gesprek.")
+            r = rows[sel_rows[0]]
+            st.divider()
+            st.markdown(f"#### {r.get('name', '?')} · {r.get('phone', '')}")
+            d1, d2, d3, d4 = st.columns(4)
+            d1.metric("Resultaat", r.get("result") or "—")
+            d2.metric("Reden", r.get("ended_reason") or "—")
+            d3.metric("Duur", _fmt_duur(r.get("duration")))
+            d4.metric("Datum", (r.get("ended_at") or "")[:10] or "—")
+
+            rec = r.get("recording")
+            if not rec:
+                st.caption("Geen opname voor dit gesprek.")
+            elif not (REC_BASE and REC_TOKEN):
+                st.caption("Opname-server niet geconfigureerd (RECORDINGS_URL/TOKEN in secrets).")
+            else:
+                try:
+                    resp = requests.get(f"{REC_BASE}/recordings/{rec}",
+                                        headers={"X-Recordings-Token": REC_TOKEN}, timeout=20)
+                    if resp.status_code == 200:
+                        st.audio(resp.content, format="audio/ogg")
+                    elif resp.status_code == 404:
+                        st.caption("⏳ Opname is verlopen (opnames blijven 14 dagen bewaard).")
+                    else:
+                        st.caption(f"Opname niet beschikbaar (status {resp.status_code}).")
+                except Exception as e:
+                    st.caption(f"Opname laden mislukt: {e}")
+
+            analyse = r.get("vapi_analysis") or {}
+            data = (analyse.get("structuredData") if isinstance(analyse, dict) else None) or {}
+            if data:
+                labels = {
+                    "deelnemer_meegedaan": "Meegedaan",
+                    "antwoordVraag1": "Vraag 1",
+                    "antwoordVraag2": "Vraag 2",
+                    "antwoordVraag3": "Vraag 3",
+                    "schuldsanering": "Schuldsanering",
+                    "toon": "Toon",
+                    "succes": "Succes",
+                }
+                regels = [f"- **{lbl}:** {data.get(k)}"
+                          for k, lbl in labels.items() if data.get(k) not in (None, "")]
+                if regels:
+                    st.markdown("**Enquête-antwoorden:**\n" + "\n".join(regels))
 
 # --- BATCH RAPPORTAGE ---
 with st.expander("📊 Batch Rapportage", expanded=False):
