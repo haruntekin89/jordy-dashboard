@@ -356,24 +356,13 @@ def _fmt_duur(s):
         return "0:00"
 
 
-with st.expander("🎙️ Gesprekken-overzicht", expanded=False):
-    # --- Filterbalk ---
-    fc1, fc2, fc3 = st.columns([2, 1, 1])
-    zoek = fc1.text_input("Zoek op naam of nummer", key="log_zoek",
-                          placeholder="bv. Jansen of laatste cijfers")
-    res_filter = fc2.selectbox("Resultaat",
-                               ["Alle", "✅ Succes", "❌ Mislukt", "📵 Geen gehoor"], key="log_res")
-    periode = fc3.selectbox("Periode",
-                            ["Laatste 7 dagen", "Vandaag", "Laatste 30 dagen", "Alles"], key="log_per")
-
-    # Paginanummer terugzetten als een filter wijzigt
-    filter_sig = f"{zoek}|{res_filter}|{periode}"
-    if st.session_state.get("log_filter_sig") != filter_sig:
-        st.session_state["log_filter_sig"] = filter_sig
-        st.session_state["log_page"] = 0
-    page = st.session_state.get("log_page", 0)
-
-    def _apply_filters(q):
+@st.cache_data(ttl=600, show_spinner=False)
+def _fetch_gesprekken(zoek, res_filter, periode, page, _nonce):
+    """Eén pagina gesprekken — GECACHET zodat de lijst niet verschuift terwijl je
+    'm bekijkt (anders open je per ongeluk een ander gesprek als er ondertussen
+    nieuwe calls bijkomen). Ververst alleen bij filter/pagina-wijziging of de
+    Ververs-knop (_nonce)."""
+    def _apply(q):
         vd = date.today()
         if periode == "Vandaag":
             q = q.gte("ended_at", f"{vd.isoformat()} 00:00:00")
@@ -392,15 +381,42 @@ with st.expander("🎙️ Gesprekken-overzicht", expanded=False):
             q = q.or_(f"phone.ilike.*{z}*,name.ilike.*{z}*")
         return q
 
+    totaal = _apply(
+        supabase.table("leads").select(LOG_COLS, count="exact", head=True)
+        .not_.is_("ended_at", "null")
+    ).execute().count or 0
+    start = page * LOG_PAGE_SIZE
+    rows = _apply(
+        supabase.table("leads").select(LOG_COLS).not_.is_("ended_at", "null")
+    ).order("ended_at", desc=True).range(start, start + LOG_PAGE_SIZE - 1).execute().data or []
+    return rows, totaal
+
+
+with st.expander("🎙️ Gesprekken-overzicht", expanded=False):
+    # --- Filterbalk ---
+    fc1, fc2, fc3, fc4 = st.columns([2, 1, 1, 1])
+    zoek = fc1.text_input("Zoek op naam of nummer", key="log_zoek",
+                          placeholder="bv. Jansen of laatste cijfers")
+    res_filter = fc2.selectbox("Resultaat",
+                               ["Alle", "✅ Succes", "❌ Mislukt", "📵 Geen gehoor"], key="log_res")
+    periode = fc3.selectbox("Periode",
+                            ["Laatste 7 dagen", "Vandaag", "Laatste 30 dagen", "Alles"], key="log_per")
+    fc4.markdown("<div style='height:28px'></div>", unsafe_allow_html=True)
+    if fc4.button("🔄 Ververs", key="log_refresh", use_container_width=True):
+        st.session_state["log_nonce"] = st.session_state.get("log_nonce", 0) + 1
+        st.session_state["log_page"] = 0
+        st.rerun()
+
+    # Paginanummer terugzetten als een filter wijzigt
+    filter_sig = f"{zoek}|{res_filter}|{periode}"
+    if st.session_state.get("log_filter_sig") != filter_sig:
+        st.session_state["log_filter_sig"] = filter_sig
+        st.session_state["log_page"] = 0
+    page = st.session_state.get("log_page", 0)
+    nonce = st.session_state.get("log_nonce", 0)
+
     try:
-        totaal = _apply_filters(
-            supabase.table("leads").select(LOG_COLS, count="exact", head=True)
-            .not_.is_("ended_at", "null")
-        ).execute().count or 0
-        start = page * LOG_PAGE_SIZE
-        rows = _apply_filters(
-            supabase.table("leads").select(LOG_COLS).not_.is_("ended_at", "null")
-        ).order("ended_at", desc=True).range(start, start + LOG_PAGE_SIZE - 1).execute().data or []
+        rows, totaal = _fetch_gesprekken(zoek, res_filter, periode, page, nonce)
     except Exception as e:
         st.error(f"Kan gesprekken niet ophalen: {e}")
         rows, totaal = [], 0
