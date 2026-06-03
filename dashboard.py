@@ -28,6 +28,31 @@ except:
 
 st.set_page_config(layout="centered", page_title="Jordy Dialer", page_icon="📞")
 
+# --- 1b. WACHTWOORD-SLOT ---
+# App mag openbaar (geen Streamlit-login), maar wel achter een eigen wachtwoord.
+# Stel APP_PASSWORD in bij de Streamlit-secrets. Niet ingesteld = vrij toegankelijk.
+def check_password():
+    try:
+        juiste = st.secrets["APP_PASSWORD"]
+    except Exception:
+        juiste = ""
+    if not juiste:
+        return True
+    if st.session_state.get("auth_ok"):
+        return True
+
+    def _check():
+        st.session_state["auth_ok"] = st.session_state.get("pw_input", "") == juiste
+
+    st.markdown("### 🔒 Jordy Dialer")
+    st.text_input("Wachtwoord", type="password", key="pw_input", on_change=_check)
+    if st.session_state.get("auth_ok") is False:
+        st.error("Onjuist wachtwoord.")
+    return False
+
+if not check_password():
+    st.stop()
+
 # --- 2. DESIGN & CSS ---
 st.markdown("""
 <style>
