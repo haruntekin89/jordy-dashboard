@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
 import time
+import requests
 from supabase import create_client
 import io
 from datetime import datetime, date
@@ -335,6 +336,61 @@ with st.expander("⚙️ Besturing", expanded=True):
         st.success(f"Snelheid aangepast naar {new_speed} calls/minuut!")
         time.sleep(1)
         st.rerun()
+
+# --- RECENTE GESPREKKEN (MET OPNAME) ---
+try:
+    REC_BASE = st.secrets["RECORDINGS_URL"].rstrip("/")
+    REC_TOKEN = st.secrets["RECORDINGS_TOKEN"]
+except Exception:
+    REC_BASE, REC_TOKEN = "", ""
+
+with st.expander("🎙️ Recente gesprekken (met opname)", expanded=False):
+    try:
+        res = supabase.table("leads").select(
+            "name,phone,result,ended_reason,duration,ended_at,recording"
+        ).not_.is_("recording", "null").order("ended_at", desc=True).limit(100).execute()
+        rec_rows = res.data or []
+    except Exception as e:
+        st.error(f"Kan gesprekken niet ophalen: {e}")
+        rec_rows = []
+
+    if not rec_rows:
+        st.info("Nog geen gesprekken met opname.")
+    elif not (REC_BASE and REC_TOKEN):
+        st.warning("Opname-server niet geconfigureerd. Voeg `RECORDINGS_URL` en "
+                   "`RECORDINGS_TOKEN` toe aan de Streamlit-secrets.")
+    else:
+        def _rec_label(r):
+            t = (r.get("ended_at") or "")[:16].replace("T", " ")
+            return f"{t} · {r.get('name','?')} · {r.get('phone','')} · {r.get('result','')}"
+
+        opties = {_rec_label(r): r for r in rec_rows}
+        keuze = st.selectbox(f"Kies een gesprek ({len(rec_rows)})", list(opties.keys()))
+        r = opties[keuze]
+
+        cols = st.columns(4)
+        cols[0].metric("Resultaat", r.get("result") or "—")
+        cols[1].metric("Reden", r.get("ended_reason") or "—")
+        cols[2].metric("Duur", f"{r.get('duration') or 0}s")
+        cols[3].metric("Datum", (r.get("ended_at") or "")[:10] or "—")
+
+        rec = r.get("recording")
+        if rec:
+            try:
+                resp = requests.get(
+                    f"{REC_BASE}/recordings/{rec}",
+                    headers={"X-Recordings-Token": REC_TOKEN},
+                    timeout=20,
+                )
+                if resp.status_code == 200:
+                    st.audio(resp.content, format="audio/ogg")
+                else:
+                    st.caption(f"Opname niet beschikbaar (status {resp.status_code}) — "
+                               "mogelijk al verwijderd (opnames blijven 14 dagen).")
+            except Exception as e:
+                st.caption(f"Opname laden mislukt: {e}")
+        else:
+            st.caption("Geen opname voor dit gesprek.")
 
 # --- BATCH RAPPORTAGE ---
 with st.expander("📊 Batch Rapportage", expanded=False):
