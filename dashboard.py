@@ -327,8 +327,13 @@ with st.expander("⚙️ Besturing", expanded=True):
     except Exception:
         current_speed = 20
 
+    # Max 40: hoger botst op CM's 5-CPS-grens (geweigerde calls) zonder meer
+    # doorvoer, want Cartesia capt op 15 gelijktijdige gesprekken. ~30 = sweet spot.
+    SPEED_MAX = 40
     st.markdown(f"##### ⚡ Snelheid &nbsp;·&nbsp; <span style='color:#6b7280;font-weight:500'>{current_speed} calls per minuut</span>", unsafe_allow_html=True)
-    new_speed = st.slider("snelheid", min_value=10, max_value=100, value=current_speed, step=5, label_visibility="collapsed")
+    new_speed = st.slider("snelheid", min_value=10, max_value=SPEED_MAX,
+                          value=min(current_speed, SPEED_MAX), step=5, label_visibility="collapsed",
+                          help="Max 40/min — daarboven weigert CM calls (5-CPS-limiet). ~30 is de sweet spot.")
 
     if new_speed != current_speed:
         supabase.table('config').upsert({"key": "speed", "value": str(new_speed)}).execute()
