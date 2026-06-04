@@ -229,14 +229,26 @@ def cached_batch_stats(batch_id, van_iso, tot_iso):
 
 @st.cache_data(ttl=15, show_spinner=False)
 def cached_kpi_counts(vandaag):
+    # Uitbel-tellers: sluit inkomende (terugbel) gesprekken uit.
     succes = supabase.table('leads').select("*", count='exact', head=True) \
-        .eq('result', 'SUCCES') \
+        .eq('result', 'SUCCES').neq('direction', 'inbound') \
         .gte('ended_at', f"{vandaag} 00:00:00").lte('ended_at', f"{vandaag} 23:59:59").execute().count
     fail = supabase.table('leads').select("*", count='exact', head=True) \
-        .eq('result', 'MISLUKT') \
+        .eq('result', 'MISLUKT').neq('direction', 'inbound') \
         .gte('ended_at', f"{vandaag} 00:00:00").lte('ended_at', f"{vandaag} 23:59:59").execute().count
     todo = supabase.table('leads').select("*", count='exact', head=True).eq('status', 'new').execute().count
     return succes, fail, todo
+
+@st.cache_data(ttl=15, show_spinner=False)
+def cached_inbound_counts(vandaag):
+    # Inkomende (terugbel) gesprekken van vandaag, gesplitst in succes/mislukt.
+    succes = supabase.table('leads').select("*", count='exact', head=True) \
+        .eq('direction', 'inbound').eq('result', 'SUCCES') \
+        .gte('ended_at', f"{vandaag} 00:00:00").lte('ended_at', f"{vandaag} 23:59:59").execute().count
+    fail = supabase.table('leads').select("*", count='exact', head=True) \
+        .eq('direction', 'inbound').eq('result', 'MISLUKT') \
+        .gte('ended_at', f"{vandaag} 00:00:00").lte('ended_at', f"{vandaag} 23:59:59").execute().count
+    return succes, fail
 
 @st.cache_data(ttl=30, show_spinner=False)
 def cached_config(key, default=None):
@@ -304,6 +316,15 @@ c1, c2, c3 = st.columns(3)
 c1.metric("✅ Succes Vandaag", count_succes)
 c2.metric("❌ Mislukt Vandaag", count_fail)
 c3.metric("⏳ Wachtrij Totaal", count_todo)
+
+# Inkomende (terugbel) gesprekken — apart van de uitbel-tellers hierboven.
+try:
+    in_succes, in_fail = cached_inbound_counts(vandaag)
+except Exception:
+    in_succes, in_fail = 0, 0
+ic1, ic2 = st.columns(2)
+ic1.metric("📥 Inbound Succes Vandaag", in_succes)
+ic2.metric("📥 Inbound Mislukt Vandaag", in_fail)
 
 # --- 6. BESTURING ---
 st.divider()
