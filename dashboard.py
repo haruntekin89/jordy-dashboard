@@ -4,7 +4,7 @@ import time
 import requests
 from supabase import create_client
 import io
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 import json
 import re
 
@@ -365,11 +365,14 @@ def _fetch_gesprekken(zoek, res_filter, periode, page, _nonce):
     def _apply(q):
         vd = date.today()
         if periode == "Vandaag":
-            q = q.gte("ended_at", f"{vd.isoformat()} 00:00:00")
+            q = q.gte("ended_at", vd.isoformat())
+        elif periode == "Gisteren":
+            q = q.gte("ended_at", (vd - timedelta(days=1)).isoformat()).lt("ended_at", vd.isoformat())
         elif periode == "Laatste 7 dagen":
-            q = q.gte("ended_at", f"{(vd - pd.Timedelta(days=6)).date().isoformat()} 00:00:00")
-        elif periode == "Laatste 30 dagen":
-            q = q.gte("ended_at", f"{(vd - pd.Timedelta(days=29)).date().isoformat()} 00:00:00")
+            q = q.gte("ended_at", (vd - timedelta(days=6)).isoformat())
+        elif periode == "Laatste 14 dagen":
+            q = q.gte("ended_at", (vd - timedelta(days=13)).isoformat())
+        # "Alles" → geen datumfilter
         if res_filter == "✅ Succes":
             q = q.eq("result", "SUCCES")
         elif res_filter == "❌ Mislukt":
@@ -400,7 +403,9 @@ with st.expander("🎙️ Gesprekken-overzicht", expanded=False):
     res_filter = fc2.selectbox("Resultaat",
                                ["Alle", "✅ Succes", "❌ Mislukt", "📵 Geen gehoor"], key="log_res")
     periode = fc3.selectbox("Periode",
-                            ["Laatste 7 dagen", "Vandaag", "Laatste 30 dagen", "Alles"], key="log_per")
+                            ["Vandaag", "Gisteren", "Laatste 7 dagen", "Laatste 14 dagen", "Alles"],
+                            key="log_per",
+                            help="Opnames worden 14 dagen bewaard; daarvoor zie je geen opname meer.")
     fc4.markdown("<div style='height:28px'></div>", unsafe_allow_html=True)
     if fc4.button("🔄 Ververs", key="log_refresh", use_container_width=True):
         st.session_state["log_nonce"] = st.session_state.get("log_nonce", 0) + 1
@@ -499,7 +504,6 @@ with st.expander("🎙️ Gesprekken-overzicht", expanded=False):
                     "antwoordVraag1": "Vraag 1",
                     "antwoordVraag2": "Vraag 2",
                     "antwoordVraag3": "Vraag 3",
-                    "schuldsanering": "Schuldsanering",
                     "toon": "Toon",
                     "succes": "Succes",
                 }
