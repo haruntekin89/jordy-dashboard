@@ -372,7 +372,7 @@ with st.expander("⚙️ Besturing", expanded=True):
 
     # Max 40: hoger botst op CM's 5-CPS-grens (geweigerde calls) zonder meer
     # doorvoer, want Cartesia capt op 15 gelijktijdige gesprekken. ~30 = sweet spot.
-    SPEED_MAX = 40
+    SPEED_MAX = 100
     st.markdown(f"##### ⚡ Snelheid &nbsp;·&nbsp; <span style='color:#6b7280;font-weight:500'>{current_speed} calls per minuut</span>", unsafe_allow_html=True)
     new_speed = st.slider("snelheid", min_value=10, max_value=SPEED_MAX,
                           value=min(current_speed, SPEED_MAX), step=5, label_visibility="collapsed",
