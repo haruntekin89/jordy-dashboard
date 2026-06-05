@@ -4,9 +4,31 @@ import time
 import requests
 from supabase import create_client
 import io
-from datetime import datetime, date, timedelta
+from datetime import datetime, date, timedelta, timezone
 import json
 import re
+
+# Tijdzone: de database slaat tijden in UTC op; we tonen alles in Nederlandse tijd.
+try:
+    from zoneinfo import ZoneInfo
+    NL_TZ = ZoneInfo("Europe/Amsterdam")
+except Exception:
+    NL_TZ = None
+
+
+def _nl_tijd(iso_str, fmt="%Y-%m-%d %H:%M"):
+    """Zet een UTC-tijdstempel (ISO-string) om naar Nederlandse tijd voor weergave."""
+    if not iso_str:
+        return ""
+    try:
+        dt = datetime.fromisoformat(str(iso_str))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        if NL_TZ is not None:
+            dt = dt.astimezone(NL_TZ)
+        return dt.strftime(fmt)
+    except Exception:
+        return str(iso_str)[:16].replace("T", " ")
 
 # --- 1. CONFIGURATIE ---
 try:
@@ -458,7 +480,7 @@ with st.expander("🎙️ Gesprekken-overzicht", expanded=False):
         max_page = max(0, (totaal - 1) // LOG_PAGE_SIZE)
 
         tabel = pd.DataFrame([{
-            "Datum/tijd": (r.get("ended_at") or "")[:16].replace("T", " "),
+            "Datum/tijd": _nl_tijd(r.get("ended_at")),
             "Naam": r.get("name") or "",
             "Nummer": r.get("phone") or "",
             "Resultaat": r.get("result") or "",
@@ -502,7 +524,7 @@ with st.expander("🎙️ Gesprekken-overzicht", expanded=False):
             d1.metric("Resultaat", r.get("result") or "—")
             d2.metric("Reden", r.get("ended_reason") or "—")
             d3.metric("Duur", _fmt_duur(r.get("duration")))
-            d4.metric("Datum", (r.get("ended_at") or "")[:10] or "—")
+            d4.metric("Datum", _nl_tijd(r.get("ended_at"), "%Y-%m-%d %H:%M") or "—")
 
             rec = r.get("recording")
             if not rec:
@@ -844,7 +866,12 @@ with st.expander("📥 Export Succesvolle Leads", expanded=False):
 
                 df_final.insert(0, "enquete", "telefonische enquete vrije tijd en ontspanning")
                 if 'ended_at' in df_raw.columns:
-                    df_final['enquete_datum'] = pd.to_datetime(df_raw['ended_at'], errors='coerce').dt.strftime('%d-%m-%Y')
+                    _ed = pd.to_datetime(df_raw['ended_at'], errors='coerce', utc=True)
+                    try:
+                        _ed = _ed.dt.tz_convert('Europe/Amsterdam')
+                    except Exception:
+                        pass
+                    df_final['enquete_datum'] = _ed.dt.strftime('%d-%m-%Y')
 
                 # Voeg ruwe original_data als JSON-string toe ter controle.
                 if 'original_data' in df_exp.columns:
