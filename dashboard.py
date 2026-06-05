@@ -393,7 +393,7 @@ except Exception:
     REC_BASE, REC_TOKEN = "", ""
 
 LOG_PAGE_SIZE = 25
-LOG_COLS = "name,phone,result,ended_reason,duration,ended_at,recording,vapi_analysis"
+LOG_COLS = "name,phone,result,ended_reason,duration,ended_at,recording,vapi_analysis,caller_id,direction"
 
 
 def _fmt_duur(s):
@@ -483,6 +483,8 @@ with st.expander("🎙️ Gesprekken-overzicht", expanded=False):
             "Datum/tijd": _nl_tijd(r.get("ended_at")),
             "Naam": r.get("name") or "",
             "Nummer": r.get("phone") or "",
+            "Uitbelnummer": ("📥 inkomend" if r.get("direction") == "inbound"
+                             else (r.get("caller_id") or "—")),
             "Resultaat": r.get("result") or "",
             "Reden": r.get("ended_reason") or "",
             "Duur": _fmt_duur(r.get("duration")),
