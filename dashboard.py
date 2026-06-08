@@ -211,7 +211,7 @@ def existing_phones(table, phones, chunk_size=200):
         found.update(row['phone'] for row in (res.data or []))
     return found
 
-GEEN_GEHOOR_REDENEN = ["customer-did-not-answer", "no-answer-transfer", "voicemail", "silence-timed-out"]
+GEEN_GEHOOR_REDENEN = ["customer-did-not-answer", "no-answer-transfer", "voicemail", "silence-timed-out", "geen-mens"]
 
 @st.cache_data(ttl=15, show_spinner=False)
 def cached_batches_overzicht():
