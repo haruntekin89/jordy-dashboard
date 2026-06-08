@@ -397,7 +397,7 @@ except Exception:
     REC_BASE, REC_TOKEN = "", ""
 
 LOG_PAGE_SIZE = 25
-LOG_COLS = "name,phone,result,ended_reason,duration,ended_at,recording,vapi_analysis,caller_id,direction"
+LOG_COLS = "name,phone,result,ended_reason,duration,ring_seconds,ring_count,ended_at,recording,vapi_analysis,caller_id,direction"
 
 
 def _fmt_duur(s):
@@ -537,6 +537,17 @@ with st.expander("🎙️ Gesprekken-overzicht", expanded=False):
             d2.metric("Reden", r.get("ended_reason") or "—")
             d3.metric("Duur", _fmt_duur(r.get("duration")))
             d4.metric("Datum", _nl_tijd(r.get("ended_at"), "%Y-%m-%d %H:%M") or "—")
+
+            # Overgaan-info: je kunt het overgaan niet hóren (opname start pas bij
+            # opnemen), maar wél zien hoe lang/vaak het overging. NL-ritme ≈ 5s/keer.
+            rs = r.get("ring_seconds")
+            if rs is not None:
+                rc = r.get("ring_count") or 0
+                if rs < 5:
+                    st.caption(f"📞 Ging nauwelijks over ({rs:g}s) — "
+                               "waarschijnlijk bezet, geweigerd of nummer bestaat niet.")
+                else:
+                    st.caption(f"📞 Ging ~{rc}x over voordat er contact was ({rs:g}s).")
 
             rec = r.get("recording")
             if not rec:
