@@ -397,7 +397,19 @@ except Exception:
     REC_BASE, REC_TOKEN = "", ""
 
 LOG_PAGE_SIZE = 25
-LOG_COLS = "name,phone,result,ended_reason,duration,ring_seconds,ring_count,ended_at,recording,vapi_analysis,caller_id,direction"
+LOG_COLS = "name,phone,result,ended_reason,duration,ring_seconds,ring_count,sip_status,ended_at,recording,vapi_analysis,caller_id,direction"
+
+# Echte reden waarom er geen contact kwam, o.b.v. de SIP-status van de telefoon-
+# maatschappij. 408 zit hier NIET in: dat is "ging echt over, geen gehoor" → dan
+# tonen we het aantal keer overgaan i.p.v. een reden.
+SIP_REDENEN = {
+    "404": "📵 Nummer bestaat niet / niet in gebruik",
+    "480": "📵 Toestel onbereikbaar (uit of geen bereik)",
+    "486": "📵 In gesprek (bezet)",
+    "487": "📵 Oproep afgebroken",
+    "503": "⚙️ Systeem belde even te snel (CPS-limiet) — geen schuld van het nummer",
+    "603": "📵 Oproep geweigerd",
+}
 
 
 def _fmt_duur(s):
@@ -538,16 +550,19 @@ with st.expander("🎙️ Gesprekken-overzicht", expanded=False):
             d3.metric("Duur", _fmt_duur(r.get("duration")))
             d4.metric("Datum", _nl_tijd(r.get("ended_at"), "%Y-%m-%d %H:%M") or "—")
 
-            # Overgaan-info: je kunt het overgaan niet hóren (opname start pas bij
-            # opnemen), maar wél zien hoe lang/vaak het overging. NL-ritme ≈ 5s/keer.
+            # Echte reden tonen i.p.v. een gokje uit de seconden. Bij een afwijzing
+            # (404/480/486/…) zegt de SIP-status precies wat er was; ging de telefoon
+            # echt over zonder gehoor (408/opgenomen) dan tonen we het aantal keer.
+            ss = str(r.get("sip_status") or "")
             rs = r.get("ring_seconds")
-            if rs is not None:
-                rc = r.get("ring_count") or 0
-                if rs < 5:
-                    st.caption(f"📞 Ging nauwelijks over ({rs:g}s) — "
-                               "waarschijnlijk bezet, geweigerd of nummer bestaat niet.")
+            rc = r.get("ring_count") or 0
+            if ss in SIP_REDENEN:
+                st.caption(SIP_REDENEN[ss])
+            elif rs is not None:
+                if rc >= 1:
+                    st.caption(f"📞 Ging ~{rc}x over ({rs:g}s).")
                 else:
-                    st.caption(f"📞 Ging ~{rc}x over voordat er contact was ({rs:g}s).")
+                    st.caption(f"📞 Vrijwel direct opgenomen ({rs:g}s).")
 
             rec = r.get("recording")
             if not rec:
