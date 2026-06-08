@@ -777,17 +777,26 @@ with st.expander("📂 Leads & Blacklist Importeren", expanded=False):
 
                         if i % 100 == 0: progress.progress(min(i / len(df), 1.0))
 
+                    fouten = 0
                     if to_upload:
-                        # Upload in chunks van 1000
+                        # Gewone insert: dubbele nummers zijn hierboven al
+                        # weggefilterd. upsert(on_conflict='phone') werkt niet
+                        # meer sinds de phone-constraint partieel is (alleen
+                        # outbound) → gaf Error 42P10 en stille mislukte imports.
                         for i in range(0, len(to_upload), 1000):
+                            chunk = to_upload[i:i+1000]
                             try:
-                                supabase.table('leads').upsert(to_upload[i:i+1000], on_conflict='phone', ignore_duplicates=True).execute()
+                                supabase.table('leads').insert(chunk).execute()
                             except Exception as e:
-                                print(f"Batch warning: {e}")
+                                fouten += len(chunk)
+                                print(f"Batch fout: {e}")
 
+                    if fouten:
+                        st.error(f"⚠️ {fouten} leads konden NIET worden toegevoegd "
+                                 f"(databasefout — zie logs). Echt in wachtrij: {c_new - fouten}.")
                     st.success(f"✅ Import voltooid! Batch: **{batch_id}**")
                     c1, c2, c3, c4 = st.columns(4)
-                    c1.metric("🆕 Toegevoegd", c_new)
+                    c1.metric("🆕 Toegevoegd", c_new - fouten)
                     c2.metric("🔄 Dubbel", c_dup)
                     c3.metric("⛔ Blacklist", c_black)
                     c4.metric("⚠️ Ongeldig", c_inv)
