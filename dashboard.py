@@ -212,6 +212,10 @@ def existing_phones(table, phones, chunk_size=200):
     return found
 
 GEEN_GEHOOR_REDENEN = ["customer-did-not-answer", "no-answer-transfer", "voicemail", "silence-timed-out", "geen-mens"]
+# Échte mens-gesprekken: lijnen waar een mens daadwerkelijk iets zei (dus geen
+# voicemail, stille lijn of niet-opgenomen). Voor de luister-filter zodat je
+# niet door honderden voicemails hoeft te scrollen.
+ECHT_GESPREK_REDENEN = ["assistant-ended-call", "klant-ended-call", "inbound-ended-call"]
 
 @st.cache_data(ttl=15, show_spinner=False)
 def cached_batches_overzicht():
@@ -427,6 +431,10 @@ def _fetch_gesprekken(zoek, res_filter, periode, page, _nonce):
             q = q.eq("result", "MISLUKT")
         elif res_filter == "📵 Geen gehoor":
             q = q.in_("ended_reason", GEEN_GEHOOR_REDENEN)
+        elif res_filter == "🗣️ Echte gesprekken":
+            q = q.in_("ended_reason", ECHT_GESPREK_REDENEN)
+        elif res_filter == "🏁 Compleet afgerond":
+            q = q.eq("ended_reason", "assistant-ended-call")
         z = re.sub(r"[^A-Za-z0-9]", "", zoek or "")
         if z:
             q = q.or_(f"phone.ilike.*{z}*,name.ilike.*{z}*")
@@ -448,8 +456,10 @@ with st.expander("🎙️ Gesprekken-overzicht", expanded=False):
     fc1, fc2, fc3, fc4 = st.columns([2, 1, 1, 1])
     zoek = fc1.text_input("Zoek op naam of nummer", key="log_zoek",
                           placeholder="bv. Jansen of laatste cijfers")
-    res_filter = fc2.selectbox("Resultaat",
-                               ["Alle", "✅ Succes", "❌ Mislukt", "📵 Geen gehoor"], key="log_res")
+    res_filter = fc2.selectbox("Filter",
+                               ["Alle", "🗣️ Echte gesprekken", "🏁 Compleet afgerond",
+                                "✅ Succes", "❌ Mislukt", "📵 Geen gehoor"], key="log_res",
+                               help="🗣️ = alleen calls waar een mens echt praatte (geen voicemail/stille lijn).")
     periode = fc3.selectbox("Periode",
                             ["Vandaag", "Gisteren", "Laatste 7 dagen", "Laatste 14 dagen", "Alles"],
                             key="log_per",
