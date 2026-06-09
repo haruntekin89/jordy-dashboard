@@ -238,19 +238,30 @@ def cached_batch_stats(batch_id, van_iso, tot_iso):
         .eq('batch_id', batch_id).eq('result', 'SUCCES')
         .gte('ended_at', van_dt).lte('ended_at', tot_dt))
 
-    mislukt = cnt(supabase.table('leads').select("*", count='exact', head=True)
-        .eq('batch_id', batch_id).eq('result', 'MISLUKT')
+    # Foutief nummer = SIP 404 (onbestaand/niet-routeerbaar) — apart van mislukt/geen gehoor.
+    foutief = cnt(supabase.table('leads').select("*", count='exact', head=True)
+        .eq('batch_id', batch_id).eq('sip_status', '404')
         .gte('ended_at', van_dt).lte('ended_at', tot_dt))
 
-    no_answer = cnt(supabase.table('leads').select("*", count='exact', head=True)
+    mislukt_total = cnt(supabase.table('leads').select("*", count='exact', head=True)
+        .eq('batch_id', batch_id).eq('result', 'MISLUKT')
+        .gte('ended_at', van_dt).lte('ended_at', tot_dt))
+    mislukt = max(mislukt_total - foutief, 0)   # échte mislukte gesprekken
+
+    no_answer_total = cnt(supabase.table('leads').select("*", count='exact', head=True)
         .eq('batch_id', batch_id).in_('ended_reason', GEEN_GEHOOR_REDENEN)
         .gte('ended_at', van_dt).lte('ended_at', tot_dt))
+    no_answer_404 = cnt(supabase.table('leads').select("*", count='exact', head=True)
+        .eq('batch_id', batch_id).in_('ended_reason', GEEN_GEHOOR_REDENEN).eq('sip_status', '404')
+        .gte('ended_at', van_dt).lte('ended_at', tot_dt))
+    no_answer = max(no_answer_total - no_answer_404, 0)   # geen gehoor van GELDIGE nummers
 
     return {
         "totaal_gebeld": totaal_gebeld,
         "succes": succes,
         "mislukt": mislukt,
         "no_answer": no_answer,
+        "foutief": foutief,
     }
 
 @st.cache_data(ttl=15, show_spinner=False)
@@ -259,9 +270,14 @@ def cached_kpi_counts(vandaag, paused_json="[]"):
     succes = supabase.table('leads').select("*", count='exact', head=True) \
         .eq('result', 'SUCCES').neq('direction', 'inbound') \
         .gte('ended_at', f"{vandaag} 00:00:00").lte('ended_at', f"{vandaag} 23:59:59").execute().count
-    fail = supabase.table('leads').select("*", count='exact', head=True) \
+    fail_total = supabase.table('leads').select("*", count='exact', head=True) \
         .eq('result', 'MISLUKT').neq('direction', 'inbound') \
         .gte('ended_at', f"{vandaag} 00:00:00").lte('ended_at', f"{vandaag} 23:59:59").execute().count
+    # Foutief nummer = SIP 404 (onbestaand/niet-routeerbaar). Apart van "mislukt".
+    foutief = supabase.table('leads').select("*", count='exact', head=True) \
+        .eq('result', 'MISLUKT').eq('sip_status', '404').neq('direction', 'inbound') \
+        .gte('ended_at', f"{vandaag} 00:00:00").lte('ended_at', f"{vandaag} 23:59:59").execute().count
+    fail = (fail_total or 0) - (foutief or 0)   # échte mislukte gesprekken
     # Wachtrij telt ALLEEN leads in AAN-staande batches (gepauzeerde batches eruit).
     try:
         paused = json.loads(paused_json) if paused_json else []
@@ -280,7 +296,7 @@ def cached_kpi_counts(vandaag, paused_json="[]"):
 
     todo_mobiel = _wachtrij("mobiel")
     todo_vast = _wachtrij("vast")
-    return succes, fail, todo_mobiel, todo_vast
+    return succes, fail, foutief, todo_mobiel, todo_vast
 
 @st.cache_data(ttl=15, show_spinner=False)
 def cached_inbound_counts(vandaag):
@@ -352,15 +368,16 @@ elif current_status == "AAN" and bel_api_status == "DOWN":
 vandaag = date.today().isoformat()
 paused_json = cached_config("paused_batches", "[]") or "[]"
 try:
-    count_succes, count_fail, todo_mobiel, todo_vast = cached_kpi_counts(vandaag, paused_json)
+    count_succes, count_fail, count_foutief, todo_mobiel, todo_vast = cached_kpi_counts(vandaag, paused_json)
 except Exception:
-    count_succes, count_fail, todo_mobiel, todo_vast = 0, 0, 0, 0
+    count_succes, count_fail, count_foutief, todo_mobiel, todo_vast = 0, 0, 0, 0, 0
 
-c1, c2, c3, c4 = st.columns(4)
+c1, c2, c3, c4, c5 = st.columns(5)
 c1.metric("✅ Succes Vandaag", count_succes)
 c2.metric("❌ Mislukt Vandaag", count_fail)
-c3.metric("⏳ Wachtrij mobiel", f"{todo_mobiel:,}".replace(",", "."))
-c4.metric("⏳ Wachtrij vast", f"{todo_vast:,}".replace(",", "."))
+c3.metric("🚫 Foutief nummer", f"{count_foutief:,}".replace(",", "."))
+c4.metric("⏳ Wachtrij mobiel", f"{todo_mobiel:,}".replace(",", "."))
+c5.metric("⏳ Wachtrij vast", f"{todo_vast:,}".replace(",", "."))
 
 # Inkomende (terugbel) gesprekken — apart van de uitbel-tellers hierboven.
 try:
@@ -745,10 +762,11 @@ with st.expander("📊 Batch Rapportage", expanded=False):
             m3.metric("📅 Gebeld in periode", f"{(stats['totaal_gebeld'] if stats else 0):,}".replace(",", "."))
 
             if stats:
-                m4, m5, m6 = st.columns(3)
+                m4, m5, m6, m7 = st.columns(4)
                 m4.metric("✅ Succes", f"{stats['succes']:,}".replace(",", "."))
                 m5.metric("📵 Geen gehoor", f"{stats['no_answer']:,}".replace(",", "."))
                 m6.metric("❌ Mislukt", f"{stats['mislukt']:,}".replace(",", "."))
+                m7.metric("🚫 Foutief nummer", f"{stats.get('foutief', 0):,}".replace(",", "."))
 
             st.markdown("&nbsp;", unsafe_allow_html=True)
 
