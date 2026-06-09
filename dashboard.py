@@ -615,6 +615,12 @@ with st.expander("📊 Batch Rapportage", expanded=False):
         oude = [b for b in batches_data if b['batch_id'] == 'oude_import']
         geordend = overige + oude
 
+        # Gepauzeerde batches (dialer belt deze NIET). Lijst staat in config.
+        try:
+            paused_list = json.loads(cached_config("paused_batches", "[]") or "[]")
+        except Exception:
+            paused_list = []
+
         # --- Filter rij: status + batch ---
         col_f1, col_f2 = st.columns([1, 2])
 
@@ -636,7 +642,8 @@ with st.expander("📊 Batch Rapportage", expanded=False):
             st.info("Geen batches gevonden voor deze filter.")
         else:
             batch_labels = {
-                f"📦 {b['batch_id']}  ·  {int(b['totaal']):,} leads".replace(",", "."): b
+                (f"{'⏸️' if b['batch_id'] in paused_list else '📦'} {b['batch_id']}"
+                 f"  ·  {int(b['totaal']):,} leads").replace(",", "."): b
                 for b in zichtbaar
             }
             gekozen_label = col_f2.selectbox(f"Batch ({len(zichtbaar)})", list(batch_labels.keys()))
@@ -697,6 +704,36 @@ with st.expander("📊 Batch Rapportage", expanded=False):
                 m4.metric("✅ Succes", f"{stats['succes']:,}".replace(",", "."))
                 m5.metric("📵 Geen gehoor", f"{stats['no_answer']:,}".replace(",", "."))
                 m6.metric("❌ Mislukt", f"{stats['mislukt']:,}".replace(",", "."))
+
+            st.markdown("&nbsp;", unsafe_allow_html=True)
+
+            # --- Batch AAN/UIT voor de dialer ---
+            is_paused = batch_id in paused_list
+            col_t1, col_t2 = st.columns([2, 1])
+            if is_paused:
+                col_t1.warning("⏸️ Deze batch staat **UIT** — de dialer belt deze leads niet.")
+                if col_t2.button("▶️ Zet AAN", key=f"on_{batch_id}", use_container_width=True):
+                    try:
+                        nieuw = [b for b in paused_list if b != batch_id]
+                        supabase.table('config').upsert(
+                            {"key": "paused_batches", "value": json.dumps(nieuw)}).execute()
+                        st.cache_data.clear()
+                        st.success(f"▶️ Batch '{batch_id}' staat weer AAN.")
+                        time.sleep(1.2); st.rerun()
+                    except Exception as e:
+                        st.error(f"Fout bij aanzetten: {e}")
+            else:
+                col_t1.success("▶️ Deze batch staat **AAN** — de dialer belt deze leads.")
+                if col_t2.button("⏸️ Zet UIT", key=f"off_{batch_id}", use_container_width=True):
+                    try:
+                        nieuw = paused_list + [batch_id]
+                        supabase.table('config').upsert(
+                            {"key": "paused_batches", "value": json.dumps(nieuw)}).execute()
+                        st.cache_data.clear()
+                        st.success(f"⏸️ Batch '{batch_id}' staat nu UIT.")
+                        time.sleep(1.2); st.rerun()
+                    except Exception as e:
+                        st.error(f"Fout bij uitzetten: {e}")
 
             st.markdown("&nbsp;", unsafe_allow_html=True)
 
