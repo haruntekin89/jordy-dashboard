@@ -267,11 +267,20 @@ def cached_kpi_counts(vandaag, paused_json="[]"):
         paused = json.loads(paused_json) if paused_json else []
     except Exception:
         paused = []
-    todo_q = supabase.table('leads').select("*", count='exact', head=True).eq('status', 'new')
-    if paused:
-        todo_q = todo_q.not_.in_("batch_id", paused)
-    todo = todo_q.execute().count
-    return succes, fail, todo
+
+    def _wachtrij(soort):
+        q = supabase.table('leads').select("*", count='exact', head=True).eq('status', 'new')
+        if paused:
+            q = q.not_.in_("batch_id", paused)
+        if soort == "mobiel":
+            q = q.like("phone", "+316%")
+        elif soort == "vast":
+            q = q.like("phone", "+31%").not_.like("phone", "+316%")
+        return q.execute().count or 0
+
+    todo_mobiel = _wachtrij("mobiel")
+    todo_vast = _wachtrij("vast")
+    return succes, fail, todo_mobiel, todo_vast
 
 @st.cache_data(ttl=15, show_spinner=False)
 def cached_inbound_counts(vandaag):
@@ -343,14 +352,15 @@ elif current_status == "AAN" and bel_api_status == "DOWN":
 vandaag = date.today().isoformat()
 paused_json = cached_config("paused_batches", "[]") or "[]"
 try:
-    count_succes, count_fail, count_todo = cached_kpi_counts(vandaag, paused_json)
+    count_succes, count_fail, todo_mobiel, todo_vast = cached_kpi_counts(vandaag, paused_json)
 except Exception:
-    count_succes, count_fail, count_todo = 0, 0, 0
+    count_succes, count_fail, todo_mobiel, todo_vast = 0, 0, 0, 0
 
-c1, c2, c3 = st.columns(3)
+c1, c2, c3, c4 = st.columns(4)
 c1.metric("✅ Succes Vandaag", count_succes)
 c2.metric("❌ Mislukt Vandaag", count_fail)
-c3.metric("⏳ Wachtrij (aan-batches)", count_todo)
+c3.metric("⏳ Wachtrij mobiel", f"{todo_mobiel:,}".replace(",", "."))
+c4.metric("⏳ Wachtrij vast", f"{todo_vast:,}".replace(",", "."))
 
 # Inkomende (terugbel) gesprekken — apart van de uitbel-tellers hierboven.
 try:
@@ -395,6 +405,32 @@ with st.expander("⚙️ Besturing", expanded=True):
         supabase.table('config').upsert({"key": "speed", "value": str(new_speed)}).execute()
         st.cache_data.clear()
         st.success(f"Snelheid aangepast naar {new_speed} calls/minuut!")
+        time.sleep(1)
+        st.rerun()
+
+    # --- MOBIEL/VAST-VERHOUDING ---
+    huidige_ratio = cached_config("mobiel_ratio", "")
+    ratio_uit = huidige_ratio in (None, "")
+    try:
+        ratio_start = int(huidige_ratio) if not ratio_uit else 65
+    except (ValueError, TypeError):
+        ratio_start = 65
+    stand = "UIT (belt zoals vanouds)" if ratio_uit else f"{ratio_start}% mobiel / {100 - ratio_start}% vast"
+    st.markdown(f"##### 📱 Mobiel/vast &nbsp;·&nbsp; <span style='color:#6b7280;font-weight:500'>{stand}</span>", unsafe_allow_html=True)
+    nieuwe_ratio = st.slider("mobiel_ratio", 0, 100, ratio_start, step=5, label_visibility="collapsed",
+                             help="65 = 65% mobiel / 35% vast. 100 = alleen mobiel. 0 = alleen vast.")
+    st.caption(f"{nieuwe_ratio}% mobiel / {100 - nieuwe_ratio}% vast")
+    colr1, colr2 = st.columns(2)
+    if colr1.button("Verhouding opslaan"):
+        supabase.table('config').upsert({"key": "mobiel_ratio", "value": str(nieuwe_ratio)}).execute()
+        st.cache_data.clear()
+        st.success(f"Verhouding ingesteld: {nieuwe_ratio}% mobiel / {100 - nieuwe_ratio}% vast.")
+        time.sleep(1)
+        st.rerun()
+    if colr2.button("Verhouding UIT (belt zoals vanouds)"):
+        supabase.table('config').upsert({"key": "mobiel_ratio", "value": ""}).execute()
+        st.cache_data.clear()
+        st.info("Verhouding uit: geen mobiel/vast-sturing meer.")
         time.sleep(1)
         st.rerun()
 
