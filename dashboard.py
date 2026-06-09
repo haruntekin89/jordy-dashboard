@@ -254,7 +254,7 @@ def cached_batch_stats(batch_id, van_iso, tot_iso):
     }
 
 @st.cache_data(ttl=15, show_spinner=False)
-def cached_kpi_counts(vandaag):
+def cached_kpi_counts(vandaag, paused_json="[]"):
     # Uitbel-tellers: sluit inkomende (terugbel) gesprekken uit.
     succes = supabase.table('leads').select("*", count='exact', head=True) \
         .eq('result', 'SUCCES').neq('direction', 'inbound') \
@@ -262,7 +262,15 @@ def cached_kpi_counts(vandaag):
     fail = supabase.table('leads').select("*", count='exact', head=True) \
         .eq('result', 'MISLUKT').neq('direction', 'inbound') \
         .gte('ended_at', f"{vandaag} 00:00:00").lte('ended_at', f"{vandaag} 23:59:59").execute().count
-    todo = supabase.table('leads').select("*", count='exact', head=True).eq('status', 'new').execute().count
+    # Wachtrij telt ALLEEN leads in AAN-staande batches (gepauzeerde batches eruit).
+    try:
+        paused = json.loads(paused_json) if paused_json else []
+    except Exception:
+        paused = []
+    todo_q = supabase.table('leads').select("*", count='exact', head=True).eq('status', 'new')
+    if paused:
+        todo_q = todo_q.not_.in_("batch_id", paused)
+    todo = todo_q.execute().count
     return succes, fail, todo
 
 @st.cache_data(ttl=15, show_spinner=False)
@@ -333,15 +341,16 @@ elif current_status == "AAN" and bel_api_status == "DOWN":
 
 # --- 5. KPI TELLERS (VANDAAG) ---
 vandaag = date.today().isoformat()
+paused_json = cached_config("paused_batches", "[]") or "[]"
 try:
-    count_succes, count_fail, count_todo = cached_kpi_counts(vandaag)
+    count_succes, count_fail, count_todo = cached_kpi_counts(vandaag, paused_json)
 except Exception:
     count_succes, count_fail, count_todo = 0, 0, 0
 
 c1, c2, c3 = st.columns(3)
 c1.metric("✅ Succes Vandaag", count_succes)
 c2.metric("❌ Mislukt Vandaag", count_fail)
-c3.metric("⏳ Wachtrij Totaal", count_todo)
+c3.metric("⏳ Wachtrij (aan-batches)", count_todo)
 
 # Inkomende (terugbel) gesprekken — apart van de uitbel-tellers hierboven.
 try:
