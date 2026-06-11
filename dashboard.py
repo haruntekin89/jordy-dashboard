@@ -967,6 +967,26 @@ with st.expander("📥 Export Succesvolle Leads", expanded=False):
 
             df_exp = pd.DataFrame(res.data)
 
+            # Terugbellers (inbound) krijgen een eigen rij zónder original_data;
+            # de leadgegevens staan op de outbound-rij met hetzelfde nummer.
+            # Vul die hier aan, anders blijven de kolommen in de export leeg.
+            if not df_exp.empty and 'original_data' in df_exp.columns:
+                _leeg = df_exp['original_data'].apply(lambda v: not isinstance(v, dict) or not v)
+                _phones = df_exp.loc[_leeg, 'phone'].dropna().unique().tolist()
+                if _phones:
+                    _src = supabase.table('leads').select("phone, original_data, ended_at") \
+                        .in_("phone", _phones).not_.is_("original_data", "null").execute()
+                    _lookup = {}
+                    for _r in sorted(_src.data, key=lambda r: r.get('ended_at') or ""):
+                        if isinstance(_r.get('original_data'), dict) and _r['original_data']:
+                            _lookup[_r['phone']] = _r['original_data']
+                    df_exp['original_data'] = df_exp.apply(
+                        lambda row: _lookup.get(row['phone'])
+                        if (not isinstance(row['original_data'], dict) or not row['original_data'])
+                        else row['original_data'],
+                        axis=1
+                    )
+
             if not df_exp.empty:
                 if 'original_data' in df_exp.columns:
                     json_data = pd.json_normalize(df_exp['original_data'])
