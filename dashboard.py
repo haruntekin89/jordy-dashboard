@@ -410,18 +410,36 @@ with st.expander("⚙️ Besturing", expanded=True):
     except Exception:
         current_speed = 20
 
-    # Max 40: hoger botst op CM's 5-CPS-grens (geweigerde calls) zonder meer
-    # doorvoer, want Cartesia capt op 15 gelijktijdige gesprekken. ~30 = sweet spot.
-    SPEED_MAX = 100
-    st.markdown(f"##### ⚡ Snelheid &nbsp;·&nbsp; <span style='color:#6b7280;font-weight:500'>{current_speed} calls per minuut</span>", unsafe_allow_html=True)
+    # Werkelijk gemeten tempo = aantal calls die de motor in de laatste 60s
+    # startte (first_attempt). Sinds de bulk-lead-fix (16-06) volgt dit het
+    # streeftempo; zo is de balk controleerbaar i.p.v. een loos getal.
+    try:
+        sinds = (datetime.utcnow() - timedelta(seconds=60)).isoformat()
+        _rt = supabase.table('leads').select('id', count='exact', head=True) \
+            .gte('first_attempt', sinds).execute()
+        echt_tempo = _rt.count
+    except Exception:
+        echt_tempo = None
+
+    # 'speed' is nu echt het streeftempo in calls/min (geen rem meer per lead).
+    # CM staat 5/sec (=300/min) + 100 gelijktijdig toe; de praktijkgrens is
+    # Cartesia (15 stemmen) + de eigen 25-cap → ~60-80/min is zinvol.
+    SPEED_MAX = 120
+    tempo_txt = (f" &nbsp;·&nbsp; <span style='color:#16a34a;font-weight:600'>"
+                 f"nu echt: {echt_tempo}/min</span>") if echt_tempo is not None else ""
+    st.markdown(
+        f"##### ⚡ Snelheid &nbsp;·&nbsp; <span style='color:#6b7280;font-weight:500'>"
+        f"streef: {current_speed} calls/min</span>{tempo_txt}", unsafe_allow_html=True)
     new_speed = st.slider("snelheid", min_value=10, max_value=SPEED_MAX,
                           value=min(current_speed, SPEED_MAX), step=5, label_visibility="collapsed",
-                          help="Max 40/min — daarboven weigert CM calls (5-CPS-limiet). ~30 is de sweet spot.")
+                          help="Streeftempo in calls/min. CM kan 5/sec (300/min); de echte grens "
+                               "is Cartesia (15 stemmen) + de 25-cap, dus ~60-80 is zinvol. "
+                               "Hoger leunt vaker op het TTS-vangnet.")
 
     if new_speed != current_speed:
         supabase.table('config').upsert({"key": "speed", "value": str(new_speed)}).execute()
         st.cache_data.clear()
-        st.success(f"Snelheid aangepast naar {new_speed} calls/minuut!")
+        st.success(f"Streeftempo aangepast naar {new_speed} calls/minuut!")
         time.sleep(1)
         st.rerun()
 
