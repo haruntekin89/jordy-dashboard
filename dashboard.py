@@ -683,6 +683,15 @@ with st.expander("📊 Batch Rapportage", expanded=False):
         except Exception:
             paused_list = []
 
+        # Reset-historie per batch: wanneer + hoeveel leads er per keer zijn
+        # gereset (geen-gehoor → wachtrij). Staat als JSON-dict in config.
+        try:
+            reset_history = json.loads(cached_config("reset_history", "{}") or "{}")
+            if not isinstance(reset_history, dict):
+                reset_history = {}
+        except Exception:
+            reset_history = {}
+
         # --- Filter rij: status + batch ---
         col_f1, col_f2 = st.columns([1, 2])
 
@@ -800,6 +809,17 @@ with st.expander("📊 Batch Rapportage", expanded=False):
 
             st.markdown("&nbsp;", unsafe_allow_html=True)
 
+            # --- Reset-historie tonen ---
+            hist = reset_history.get(batch_id, [])
+            if hist:
+                laatste = hist[-1]
+                st.caption(
+                    f"♻️ Laatste reset: **{_nl_tijd(laatste.get('ts'))}** "
+                    f"({laatste.get('leads', 0)} leads) · in totaal **{len(hist)}× gereset**"
+                )
+            else:
+                st.caption("♻️ Nog niet gereset")
+
             # --- Acties ---
             col_r, col_d = st.columns(2)
 
@@ -808,6 +828,11 @@ with st.expander("📊 Batch Rapportage", expanded=False):
                     res = supabase.table('leads').update({"status": "new", "result": None}) \
                         .eq("batch_id", batch_id).in_("ended_reason", GEEN_GEHOOR_REDENEN).execute()
                     aantal = len(res.data) if res.data else 0
+                    # Reset-moment opslaan in config (tijd in UTC + aantal leads).
+                    hist.append({"ts": datetime.now(timezone.utc).isoformat(), "leads": aantal})
+                    reset_history[batch_id] = hist
+                    supabase.table('config').upsert(
+                        {"key": "reset_history", "value": json.dumps(reset_history)}).execute()
                     st.cache_data.clear()
                     st.success(f"✅ {aantal} leads in '{batch_id}' staan weer in de wachtrij.")
                     time.sleep(1.5); st.rerun()
