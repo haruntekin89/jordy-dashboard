@@ -217,6 +217,19 @@ GEEN_GEHOOR_REDENEN = ["customer-did-not-answer", "no-answer-transfer", "voicema
 # niet door honderden voicemails hoeft te scrollen.
 ECHT_GESPREK_REDENEN = ["assistant-ended-call", "klant-ended-call", "inbound-ended-call"]
 
+# Losse redenen om exact op te filteren in het gesprekken-overzicht. Label -> de
+# echte ended_reason-waarde in de database. Zo kan Harun bv. alleen "klant hing
+# op" of alleen "geen-mens" bekijken i.p.v. de grove groepen.
+REDEN_FILTERS = {
+    "🤖 Jordy rondde af (assistant-ended-call)": "assistant-ended-call",
+    "📞 Klant hing op (klant-ended-call)": "klant-ended-call",
+    "🔇 Geen mens (geen-mens)": "geen-mens",
+    "📩 Voicemail (voicemail)": "voicemail",
+    "📴 Niet opgenomen (customer-did-not-answer)": "customer-did-not-answer",
+    "🤫 Stilte time-out (silence-timed-out)": "silence-timed-out",
+    "📥 Inkomend afgesloten (inbound-ended-call)": "inbound-ended-call",
+}
+
 @st.cache_data(ttl=15, show_spinner=False)
 def cached_batches_overzicht():
     # Server-side aggregatie via Postgres RPC — stuurt alleen samenvatting, geen 100k rijen
@@ -539,6 +552,8 @@ def _fetch_gesprekken(zoek, res_filter, periode, page, _nonce):
             q = q.in_("ended_reason", ECHT_GESPREK_REDENEN)
         elif res_filter == "🏁 Compleet afgerond":
             q = q.eq("ended_reason", "assistant-ended-call")
+        elif res_filter in REDEN_FILTERS:
+            q = q.eq("ended_reason", REDEN_FILTERS[res_filter])
         z = re.sub(r"[^A-Za-z0-9]", "", zoek or "")
         if z:
             q = q.or_(f"phone.ilike.*{z}*,name.ilike.*{z}*")
@@ -562,8 +577,10 @@ with st.expander("🎙️ Gesprekken-overzicht", expanded=False):
                           placeholder="bv. Jansen of laatste cijfers")
     res_filter = fc2.selectbox("Filter",
                                ["Alle", "🗣️ Echte gesprekken", "🏁 Compleet afgerond",
-                                "✅ Succes", "❌ Mislukt", "📵 Geen gehoor"], key="log_res",
-                               help="🗣️ = alleen calls waar een mens echt praatte (geen voicemail/stille lijn).")
+                                "✅ Succes", "❌ Mislukt", "📵 Geen gehoor",
+                                *REDEN_FILTERS.keys()], key="log_res",
+                               help="🗣️ = alleen calls waar een mens echt praatte (geen voicemail/stille lijn). "
+                                    "De redenen onderaan filteren op exact die ended_reason.")
     periode = fc3.selectbox("Periode",
                             ["Vandaag", "Gisteren", "Laatste 7 dagen", "Laatste 14 dagen", "Alles"],
                             key="log_per",
