@@ -277,7 +277,18 @@ def cached_kpi_counts(vandaag, paused_json="[]"):
     foutief = supabase.table('leads').select("*", count='exact', head=True) \
         .eq('result', 'MISLUKT').eq('sip_status', '404').neq('direction', 'inbound') \
         .gte('ended_at', f"{vandaag} 00:00:00").lte('ended_at', f"{vandaag} 23:59:59").execute().count
-    fail = (fail_total or 0) - (foutief or 0)   # échte mislukte gesprekken
+    # Geen gehoor = niemand nam echt op (did-not-answer / voicemail / stille lijn /
+    # geen-mens). Géén gevoerd gesprek → hoort NIET bij "mislukt". 404 zit hier in
+    # en wordt eruit gehaald, zodat "geen gehoor" alleen GELDIGE nummers telt.
+    geen_gehoor_total = supabase.table('leads').select("*", count='exact', head=True) \
+        .eq('result', 'MISLUKT').in_('ended_reason', GEEN_GEHOOR_REDENEN).neq('direction', 'inbound') \
+        .gte('ended_at', f"{vandaag} 00:00:00").lte('ended_at', f"{vandaag} 23:59:59").execute().count
+    geen_gehoor_404 = supabase.table('leads').select("*", count='exact', head=True) \
+        .eq('result', 'MISLUKT').in_('ended_reason', GEEN_GEHOOR_REDENEN).eq('sip_status', '404').neq('direction', 'inbound') \
+        .gte('ended_at', f"{vandaag} 00:00:00").lte('ended_at', f"{vandaag} 23:59:59").execute().count
+    geen_gehoor = max((geen_gehoor_total or 0) - (geen_gehoor_404 or 0), 0)  # geen gehoor van GELDIGE nummers
+    # Échte mislukte gesprekken = totaal MISLUKT − foutieve nummers − geen gehoor.
+    fail = max((fail_total or 0) - (foutief or 0) - geen_gehoor, 0)
     # Wachtrij telt ALLEEN leads in AAN-staande batches (gepauzeerde batches eruit).
     try:
         paused = json.loads(paused_json) if paused_json else []
@@ -296,7 +307,7 @@ def cached_kpi_counts(vandaag, paused_json="[]"):
 
     todo_mobiel = _wachtrij("mobiel")
     todo_vast = _wachtrij("vast")
-    return succes, fail, foutief, todo_mobiel, todo_vast
+    return succes, fail, geen_gehoor, foutief, todo_mobiel, todo_vast
 
 @st.cache_data(ttl=15, show_spinner=False)
 def cached_inbound_counts(vandaag):
@@ -368,16 +379,17 @@ elif current_status == "AAN" and bel_api_status == "DOWN":
 vandaag = date.today().isoformat()
 paused_json = cached_config("paused_batches", "[]") or "[]"
 try:
-    count_succes, count_fail, count_foutief, todo_mobiel, todo_vast = cached_kpi_counts(vandaag, paused_json)
+    count_succes, count_fail, count_geen_gehoor, count_foutief, todo_mobiel, todo_vast = cached_kpi_counts(vandaag, paused_json)
 except Exception:
-    count_succes, count_fail, count_foutief, todo_mobiel, todo_vast = 0, 0, 0, 0, 0
+    count_succes, count_fail, count_geen_gehoor, count_foutief, todo_mobiel, todo_vast = 0, 0, 0, 0, 0, 0
 
-c1, c2, c3, c4, c5 = st.columns(5)
+c1, c2, c3, c4, c5, c6 = st.columns(6)
 c1.metric("✅ Succes Vandaag", count_succes)
-c2.metric("❌ Mislukt Vandaag", count_fail)
-c3.metric("🚫 Foutief nummer", f"{count_foutief:,}".replace(",", "."))
-c4.metric("⏳ Wachtrij mobiel", f"{todo_mobiel:,}".replace(",", "."))
-c5.metric("⏳ Wachtrij vast", f"{todo_vast:,}".replace(",", "."))
+c2.metric("❌ Mislukt Vandaag", count_fail, help="Alleen échte gevoerde gesprekken die niet slaagden. Niet-opgenomen calls staan onder 'Geen gehoor'.")
+c3.metric("📵 Geen gehoor", f"{count_geen_gehoor:,}".replace(",", "."), help="Niemand nam echt op: did-not-answer, voicemail, stille lijn, geen-mens (geldige nummers).")
+c4.metric("🚫 Foutief nummer", f"{count_foutief:,}".replace(",", "."))
+c5.metric("⏳ Wachtrij mobiel", f"{todo_mobiel:,}".replace(",", "."))
+c6.metric("⏳ Wachtrij vast", f"{todo_vast:,}".replace(",", "."))
 
 # Inkomende (terugbel) gesprekken — apart van de uitbel-tellers hierboven.
 try:
