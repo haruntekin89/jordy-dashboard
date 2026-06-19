@@ -873,7 +873,8 @@ with st.expander("📊 Batch Rapportage", expanded=False):
             if col_r.button("♻️ Reset Geen Gehoor", key=f"reset_{batch_id}"):
                 try:
                     res = supabase.table('leads').update({"status": "new", "result": None}) \
-                        .eq("batch_id", batch_id).in_("ended_reason", GEEN_GEHOOR_REDENEN).execute()
+                        .eq("batch_id", batch_id).in_("ended_reason", GEEN_GEHOOR_REDENEN) \
+                        .neq("sip_status", "404").execute()
                     aantal = len(res.data) if res.data else 0
                     # Reset-moment opslaan in config (tijd in UTC + aantal leads).
                     hist.append({"ts": datetime.now(timezone.utc).isoformat(), "leads": aantal})
