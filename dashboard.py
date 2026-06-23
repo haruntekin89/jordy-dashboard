@@ -746,7 +746,6 @@ with st.expander("📊 Batch Rapportage", expanded=False):
             sales = int(b.get("sales", 0))
             conv = (sales / afgehandeld * 100) if afgehandeld else 0.0
             tabel.append({
-                "Kies": False,
                 "Batch": bid,
                 "Status": ST_INACTIEF if bid in paused_list else ST_ACTIEF,
                 "Totaal": int(b.get("totaal", 0)),
@@ -759,8 +758,7 @@ with st.expander("📊 Batch Rapportage", expanded=False):
         df = pd.DataFrame(tabel)
 
         st.caption("Klik op een kolomkop om te sorteren. Wijzig **Status** om een "
-                   "batch direct aan/uit te zetten. Vink **Kies** aan om er onderaan "
-                   "een actie (reset/verwijderen) op te doen.")
+                   "batch direct aan/uit te zetten voor de dialer.")
 
         bewerkt = st.data_editor(
             df,
@@ -768,9 +766,6 @@ with st.expander("📊 Batch Rapportage", expanded=False):
             use_container_width=True,
             key=f"batch_tabel_{periode}",
             column_config={
-                "Kies": st.column_config.CheckboxColumn(
-                    "Kies", default=False,
-                    help="Vink aan om hieronder een actie (reset/verwijderen) op deze batch te doen"),
                 "Status": st.column_config.SelectboxColumn(
                     "Status", options=[ST_ACTIEF, ST_INACTIEF], required=True,
                     help="Klik om deze batch aan/uit te zetten voor de dialer"),
@@ -811,23 +806,15 @@ with st.expander("📊 Batch Rapportage", expanded=False):
 
         # --- Acties per batch (onomkeerbaar): reset / verwijderen ---
         st.markdown("##### ⚙️ Acties per batch")
-        # Actie-batch = de in de tabel aangevinkte rij (kolom "Kies").
-        # Niks aangevinkt? Dan standaard de bovenste batch, zodat dit blok
-        # altijd zichtbaar blijft.
-        gekozen_rows = [r["Batch"] for _, r in bewerkt.iterrows() if bool(r.get("Kies"))]
+        # Actie-batch kiezen via een dropdown (raakt de tabel niet aan, dus die
+        # verspringt niet). Blok blijft altijd zichtbaar.
         batch_ids = [b["batch_id"] for b in rijen]
-        akb = gekozen_rows[0] if gekozen_rows else (batch_ids[0] if batch_ids else None)
-        if len(gekozen_rows) > 1:
-            st.caption(f"ℹ️ Meerdere batches aangevinkt — ik gebruik de bovenste: **{akb}**.")
+        akb = st.selectbox("Kies batch voor actie", batch_ids,
+                           key="actie_batch") if batch_ids else None
 
         if not akb:
             st.info("Geen batches om een actie op te doen.")
         else:
-            if gekozen_rows:
-                st.caption(f"Geselecteerd: **{akb}**")
-            else:
-                st.caption(f"Geselecteerd (standaard de bovenste): **{akb}** — vink in de "
-                           "tabel (kolom **Kies**) een andere batch aan om te wisselen.")
             hist = reset_history.get(akb, [])
             if hist:
                 laatste = hist[-1]
