@@ -812,15 +812,22 @@ with st.expander("📊 Batch Rapportage", expanded=False):
         # --- Acties per batch (onomkeerbaar): reset / verwijderen ---
         st.markdown("##### ⚙️ Acties per batch")
         # Actie-batch = de in de tabel aangevinkte rij (kolom "Kies").
+        # Niks aangevinkt? Dan standaard de bovenste batch, zodat dit blok
+        # altijd zichtbaar blijft.
         gekozen_rows = [r["Batch"] for _, r in bewerkt.iterrows() if bool(r.get("Kies"))]
-        akb = gekozen_rows[0] if gekozen_rows else None
+        batch_ids = [b["batch_id"] for b in rijen]
+        akb = gekozen_rows[0] if gekozen_rows else (batch_ids[0] if batch_ids else None)
         if len(gekozen_rows) > 1:
             st.caption(f"ℹ️ Meerdere batches aangevinkt — ik gebruik de bovenste: **{akb}**.")
 
         if not akb:
-            st.info("Vink in de tabel (kolom **Kies**) een batch aan om er een actie op te doen.")
+            st.info("Geen batches om een actie op te doen.")
         else:
-            st.caption(f"Geselecteerd: **{akb}**")
+            if gekozen_rows:
+                st.caption(f"Geselecteerd: **{akb}**")
+            else:
+                st.caption(f"Geselecteerd (standaard de bovenste): **{akb}** — vink in de "
+                           "tabel (kolom **Kies**) een andere batch aan om te wisselen.")
             hist = reset_history.get(akb, [])
             if hist:
                 laatste = hist[-1]
