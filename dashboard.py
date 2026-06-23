@@ -759,7 +759,7 @@ with st.expander("📊 Batch Rapportage", expanded=False):
             df,
             hide_index=True,
             use_container_width=True,
-            key="batch_tabel",
+            key=f"batch_tabel_{periode}",
             column_config={
                 "Status": st.column_config.SelectboxColumn(
                     "Status", options=["Actief", "Inactief"], required=True),
