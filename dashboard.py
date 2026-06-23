@@ -746,6 +746,7 @@ with st.expander("📊 Batch Rapportage", expanded=False):
             sales = int(b.get("sales", 0))
             conv = (sales / afgehandeld * 100) if afgehandeld else 0.0
             tabel.append({
+                "Kies": False,
                 "Batch": bid,
                 "Status": ST_INACTIEF if bid in paused_list else ST_ACTIEF,
                 "Totaal": int(b.get("totaal", 0)),
@@ -758,7 +759,8 @@ with st.expander("📊 Batch Rapportage", expanded=False):
         df = pd.DataFrame(tabel)
 
         st.caption("Klik op een kolomkop om te sorteren. Wijzig **Status** om een "
-                   "batch direct aan/uit te zetten voor de dialer.")
+                   "batch direct aan/uit te zetten. Vink **Kies** aan om er onderaan "
+                   "een actie (reset/verwijderen) op te doen.")
 
         bewerkt = st.data_editor(
             df,
@@ -766,6 +768,9 @@ with st.expander("📊 Batch Rapportage", expanded=False):
             use_container_width=True,
             key=f"batch_tabel_{periode}",
             column_config={
+                "Kies": st.column_config.CheckboxColumn(
+                    "Kies", default=False,
+                    help="Vink aan om hieronder een actie (reset/verwijderen) op deze batch te doen"),
                 "Status": st.column_config.SelectboxColumn(
                     "Status", options=[ST_ACTIEF, ST_INACTIEF], required=True,
                     help="Klik om deze batch aan/uit te zetten voor de dialer"),
@@ -806,49 +811,56 @@ with st.expander("📊 Batch Rapportage", expanded=False):
 
         # --- Acties per batch (onomkeerbaar): reset / verwijderen ---
         st.markdown("##### ⚙️ Acties per batch")
-        batch_ids = [b["batch_id"] for b in rijen]
-        akb = st.selectbox("Kies batch voor actie", batch_ids, key="actie_batch")
+        # Actie-batch = de in de tabel aangevinkte rij (kolom "Kies").
+        gekozen_rows = [r["Batch"] for _, r in bewerkt.iterrows() if bool(r.get("Kies"))]
+        akb = gekozen_rows[0] if gekozen_rows else None
+        if len(gekozen_rows) > 1:
+            st.caption(f"ℹ️ Meerdere batches aangevinkt — ik gebruik de bovenste: **{akb}**.")
 
-        hist = reset_history.get(akb, [])
-        if hist:
-            laatste = hist[-1]
-            st.caption(
-                f"♻️ Laatste reset: **{_nl_tijd(laatste.get('ts'))}** "
-                f"({laatste.get('leads', 0)} leads) · in totaal **{len(hist)}× gereset**"
-            )
+        if not akb:
+            st.info("Vink in de tabel (kolom **Kies**) een batch aan om er een actie op te doen.")
         else:
-            st.caption("♻️ Nog niet gereset")
+            st.caption(f"Geselecteerd: **{akb}**")
+            hist = reset_history.get(akb, [])
+            if hist:
+                laatste = hist[-1]
+                st.caption(
+                    f"♻️ Laatste reset: **{_nl_tijd(laatste.get('ts'))}** "
+                    f"({laatste.get('leads', 0)} leads) · in totaal **{len(hist)}× gereset**"
+                )
+            else:
+                st.caption("♻️ Nog niet gereset")
 
-        col_r, col_d = st.columns(2)
+            col_r, col_d = st.columns(2)
 
-        if col_r.button("♻️ Reset Geen Gehoor", key=f"reset_{akb}"):
-            try:
-                res = supabase.table('leads').update({"status": "new", "result": None}) \
-                    .eq("batch_id", akb).in_("ended_reason", GEEN_GEHOOR_REDENEN) \
-                    .neq("sip_status", "404").execute()
-                aantal = len(res.data) if res.data else 0
-                hist.append({"ts": datetime.now(timezone.utc).isoformat(), "leads": aantal})
-                reset_history[akb] = hist
-                supabase.table('config').upsert(
-                    {"key": "reset_history", "value": json.dumps(reset_history)}).execute()
-                st.cache_data.clear()
-                st.success(f"✅ {aantal} leads in '{akb}' staan weer in de wachtrij.")
-                time.sleep(1.5); st.rerun()
-            except Exception as e:
-                st.error(f"Fout bij reset: {e}")
-
-        bevestig = col_d.checkbox("Bevestig verwijderen", key=f"conf_{akb}")
-        if col_d.button("🗑️ Verwijder Batch", key=f"del_{akb}"):
-            if bevestig:
+            if col_r.button("♻️ Reset Geen Gehoor", key=f"reset_{akb}"):
                 try:
-                    supabase.table('leads').delete().eq("batch_id", akb).execute()
+                    res = supabase.table('leads').update({"status": "new", "result": None}) \
+                        .eq("batch_id", akb).in_("ended_reason", GEEN_GEHOOR_REDENEN) \
+                        .neq("sip_status", "404").execute()
+                    aantal = len(res.data) if res.data else 0
+                    hist.append({"ts": datetime.now(timezone.utc).isoformat(), "leads": aantal})
+                    reset_history[akb] = hist
+                    supabase.table('config').upsert(
+                        {"key": "reset_history", "value": json.dumps(reset_history)}).execute()
                     st.cache_data.clear()
-                    st.warning(f"🗑️ Batch '{akb}' is volledig verwijderd.")
+                    st.success(f"✅ {aantal} leads in '{akb}' staan weer in de wachtrij.")
                     time.sleep(1.5); st.rerun()
                 except Exception as e:
-                    st.error(f"Fout bij verwijderen: {e}")
-            else:
-                st.info("Vink eerst 'Bevestig verwijderen' aan.")
+                    st.error(f"Fout bij reset: {e}")
+
+            bevestig = col_d.checkbox("Bevestig verwijderen", key=f"conf_{akb}")
+            if col_d.button("🗑️ Verwijder Batch", key=f"del_{akb}"):
+                if bevestig:
+                    try:
+                        supabase.table('leads').delete().eq("batch_id", akb).execute()
+                        st.cache_data.clear()
+                        st.warning(f"🗑️ Batch '{akb}' is volledig verwijderd.")
+                        time.sleep(1.5); st.rerun()
+                    except Exception as e:
+                        st.error(f"Fout bij verwijderen: {e}")
+                else:
+                    st.info("Vink eerst 'Bevestig verwijderen' aan.")
 
 # --- 9. IMPORT MODULE ---
 @st.dialog("📊 Import resultaat")
