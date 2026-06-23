@@ -231,51 +231,14 @@ REDEN_FILTERS = {
 }
 
 @st.cache_data(ttl=15, show_spinner=False)
-def cached_batches_overzicht():
-    # Server-side aggregatie via Postgres RPC — stuurt alleen samenvatting, geen 100k rijen
-    res = supabase.rpc('batches_overzicht').execute()
+def cached_batches_overzicht(van_iso, tot_iso):
+    # Server-side aggregatie via Postgres RPC — alle batchcijfers in één query,
+    # voor de gekozen periode (van/tot zijn datum-ISO, bv. "2026-06-23").
+    res = supabase.rpc('batches_overzicht', {
+        "van": f"{van_iso} 00:00:00",
+        "tot": f"{tot_iso} 23:59:59",
+    }).execute()
     return res.data or []
-
-@st.cache_data(ttl=15, show_spinner=False)
-def cached_batch_stats(batch_id, van_iso, tot_iso):
-    van_dt = f"{van_iso} 00:00:00"
-    tot_dt = f"{tot_iso} 23:59:59"
-
-    def cnt(builder):
-        return builder.execute().count or 0
-
-    totaal_gebeld = cnt(supabase.table('leads').select("*", count='exact', head=True)
-        .eq('batch_id', batch_id).gte('ended_at', van_dt).lte('ended_at', tot_dt))
-
-    succes = cnt(supabase.table('leads').select("*", count='exact', head=True)
-        .eq('batch_id', batch_id).eq('result', 'SUCCES')
-        .gte('ended_at', van_dt).lte('ended_at', tot_dt))
-
-    # Foutief nummer = SIP 404 (onbestaand/niet-routeerbaar) — apart van mislukt/geen gehoor.
-    foutief = cnt(supabase.table('leads').select("*", count='exact', head=True)
-        .eq('batch_id', batch_id).eq('sip_status', '404')
-        .gte('ended_at', van_dt).lte('ended_at', tot_dt))
-
-    mislukt_total = cnt(supabase.table('leads').select("*", count='exact', head=True)
-        .eq('batch_id', batch_id).eq('result', 'MISLUKT')
-        .gte('ended_at', van_dt).lte('ended_at', tot_dt))
-    mislukt = max(mislukt_total - foutief, 0)   # échte mislukte gesprekken
-
-    no_answer_total = cnt(supabase.table('leads').select("*", count='exact', head=True)
-        .eq('batch_id', batch_id).in_('ended_reason', GEEN_GEHOOR_REDENEN)
-        .gte('ended_at', van_dt).lte('ended_at', tot_dt))
-    no_answer_404 = cnt(supabase.table('leads').select("*", count='exact', head=True)
-        .eq('batch_id', batch_id).in_('ended_reason', GEEN_GEHOOR_REDENEN).eq('sip_status', '404')
-        .gte('ended_at', van_dt).lte('ended_at', tot_dt))
-    no_answer = max(no_answer_total - no_answer_404, 0)   # geen gehoor van GELDIGE nummers
-
-    return {
-        "totaal_gebeld": totaal_gebeld,
-        "succes": succes,
-        "mislukt": mislukt,
-        "no_answer": no_answer,
-        "foutief": foutief,
-    }
 
 @st.cache_data(ttl=15, show_spinner=False)
 def cached_kpi_counts(vandaag, paused_json="[]"):
@@ -525,6 +488,13 @@ def _fmt_duur(s):
         return "0:00"
 
 
+def _fmt_duur_lang(sec):
+    """Totale belduur in seconden -> 'Xu YYm' (bv. 18u 04m)."""
+    sec = int(sec or 0)
+    uren, minuten = sec // 3600, (sec % 3600) // 60
+    return f"{uren}u {minuten:02d}m"
+
+
 @st.cache_data(ttl=600, show_spinner=False)
 def _fetch_gesprekken(zoek, res_filter, periode, page, _nonce):
     """Eén pagina gesprekken — GECACHET zodat de lijst niet verschuift terwijl je
@@ -709,29 +679,43 @@ with st.expander("🎙️ Gesprekken-overzicht", expanded=False):
 
 # --- BATCH RAPPORTAGE ---
 with st.expander("📊 Batch Rapportage", expanded=False):
+    vandaag_d = date.today()
+
+    # --- Periodekiezer (werkt op de hele tabel) ---
+    periode = st.selectbox(
+        "Periode",
+        ["Vandaag", "Laatste 7 dagen", "Laatste 30 dagen", "Hele looptijd"],
+        index=3,
+        key="batch_periode",
+    )
+    if periode == "Vandaag":
+        van_d, tot_d = vandaag_d, vandaag_d
+    elif periode == "Laatste 7 dagen":
+        van_d, tot_d = vandaag_d - pd.Timedelta(days=6), vandaag_d
+    elif periode == "Laatste 30 dagen":
+        van_d, tot_d = vandaag_d - pd.Timedelta(days=29), vandaag_d
+    else:  # Hele looptijd
+        van_d, tot_d = date(2020, 1, 1), vandaag_d
+    if isinstance(van_d, pd.Timestamp): van_d = van_d.date()
+    if isinstance(tot_d, pd.Timestamp): tot_d = tot_d.date()
+
     try:
-        batches_data = cached_batches_overzicht()
+        batches_data = cached_batches_overzicht(van_d.isoformat(), tot_d.isoformat())
     except Exception as e:
-        st.error(f"Kan batches niet ophalen: {e}. Heb je de RPC functie 'batches_overzicht' al aangemaakt in Supabase?")
+        st.error(f"Kan batches niet ophalen: {e}. Heb je de nieuwe RPC-functie "
+                 "'batches_overzicht(van, tot)' al in Supabase gedraaid?")
         batches_data = []
 
     if not batches_data:
         st.info("Nog geen leads in de database.")
     else:
-        # Nieuwste batches eerst, 'oude_import' onderaan
-        overige = sorted([b for b in batches_data if b['batch_id'] != 'oude_import'],
-                         key=lambda b: b['batch_id'], reverse=True)
-        oude = [b for b in batches_data if b['batch_id'] == 'oude_import']
-        geordend = overige + oude
-
         # Gepauzeerde batches (dialer belt deze NIET). Lijst staat in config.
         try:
             paused_list = json.loads(cached_config("paused_batches", "[]") or "[]")
         except Exception:
             paused_list = []
 
-        # Reset-historie per batch: wanneer + hoeveel leads er per keer zijn
-        # gereset (geen-gehoor → wachtrij). Staat als JSON-dict in config.
+        # Reset-historie per batch (geen-gehoor -> wachtrij), JSON-dict in config.
         try:
             reset_history = json.loads(cached_config("reset_history", "{}") or "{}")
             if not isinstance(reset_history, dict):
@@ -739,166 +723,126 @@ with st.expander("📊 Batch Rapportage", expanded=False):
         except Exception:
             reset_history = {}
 
-        # --- Filter rij: status + batch ---
-        col_f1, col_f2 = st.columns([1, 2])
+        # Sorteer: Actief eerst, daarbinnen nieuwste boven, oude_import onderaan.
+        # Stabiel sorteren: eerst op batch_id aflopend (nieuwste boven), daarna
+        # op (inactief, oude_import) zodat die als groep zakken maar de
+        # batch_id-volgorde binnen elke groep bewaard blijft.
+        rijen = sorted(batches_data, key=lambda b: b["batch_id"], reverse=True)
+        rijen = sorted(rijen, key=lambda b: (
+            b["batch_id"] in paused_list,      # Actief (False) eerst
+            b["batch_id"] == "oude_import",    # oude_import onderaan
+        ))
 
-        filter_keuze = col_f1.selectbox(
-            "Status",
-            ["🔥 Actief (nog te bellen)", "✅ Inactief (klaar)", "📋 Alle batches"],
-            index=0,
+        # Bouw de tabel-data.
+        tabel = []
+        for b in rijen:
+            bid = b["batch_id"]
+            afgehandeld = int(b.get("afgehandeld", 0))
+            sales = int(b.get("sales", 0))
+            conv = (sales / afgehandeld * 100) if afgehandeld else 0.0
+            tabel.append({
+                "Batch": bid,
+                "Status": "Inactief" if bid in paused_list else "Actief",
+                "Totaal": int(b.get("totaal", 0)),
+                "Afgehandeld": afgehandeld,
+                "Open": int(b.get("te_bellen", 0)),
+                "Gebelde tijd": _fmt_duur_lang(b.get("gebelde_tijd_sec", 0)),
+                "Sales": sales,
+                "Conversie": f"{conv:.1f}%".replace(".", ","),
+            })
+        df = pd.DataFrame(tabel)
+
+        st.caption("Klik op een kolomkop om te sorteren. Wijzig **Status** om een "
+                   "batch direct aan/uit te zetten voor de dialer.")
+
+        bewerkt = st.data_editor(
+            df,
+            hide_index=True,
+            use_container_width=True,
+            key="batch_tabel",
+            column_config={
+                "Status": st.column_config.SelectboxColumn(
+                    "Status", options=["Actief", "Inactief"], required=True),
+                "Batch": st.column_config.TextColumn("Batch", disabled=True),
+                "Totaal": st.column_config.NumberColumn("Totaal", disabled=True),
+                "Afgehandeld": st.column_config.NumberColumn("Afgehandeld", disabled=True),
+                "Open": st.column_config.NumberColumn("Open", disabled=True),
+                "Gebelde tijd": st.column_config.TextColumn("Gebelde tijd", disabled=True),
+                "Sales": st.column_config.NumberColumn("Sales", disabled=True),
+                "Conversie": st.column_config.TextColumn("Conversie", disabled=True),
+            },
         )
 
-        if filter_keuze.startswith("🔥"):
-            zichtbaar = [b for b in geordend if int(b['te_bellen']) > 0]
-        elif filter_keuze.startswith("✅"):
-            zichtbaar = [b for b in geordend if int(b['te_bellen']) == 0]
-        else:
-            zichtbaar = geordend
+        # --- Statuswijzigingen verwerken ---
+        nieuwe_paused = set(paused_list)
+        gewijzigd = False
+        for _, rij in bewerkt.iterrows():
+            bid = rij["Batch"]
+            wil_inactief = (rij["Status"] == "Inactief")
+            nu_inactief = (bid in nieuwe_paused)
+            if wil_inactief and not nu_inactief:
+                nieuwe_paused.add(bid); gewijzigd = True
+            elif not wil_inactief and nu_inactief:
+                nieuwe_paused.discard(bid); gewijzigd = True
 
-        if not zichtbaar:
-            col_f2.selectbox("Batch", ["— geen batches in deze filter —"], disabled=True)
-            st.info("Geen batches gevonden voor deze filter.")
-        else:
-            batch_labels = {
-                (f"{'⏸️' if b['batch_id'] in paused_list else '📦'} {b['batch_id']}"
-                 f"  ·  {int(b['totaal']):,} leads").replace(",", "."): b
-                for b in zichtbaar
-            }
-            gekozen_label = col_f2.selectbox(f"Batch ({len(zichtbaar)})", list(batch_labels.keys()))
-            gekozen = batch_labels[gekozen_label]
-            batch_id = gekozen['batch_id']
-
-            # --- Periode dropdown + optionele datums ---
-            col_p1, col_p2, col_p3 = st.columns([1, 1, 1])
-            periode = col_p1.selectbox(
-                "Periode",
-                ["Vandaag", "Laatste 7 dagen", "Laatste 30 dagen", "Hele looptijd", "Aangepast"],
-                index=3,
-            )
-
-            vandaag_d = date.today()
-            if periode == "Vandaag":
-                van_d, tot_d = vandaag_d, vandaag_d
-                col_p2.text_input("Van", value=van_d.isoformat(), disabled=True, key=f"van_disp_{batch_id}")
-                col_p3.text_input("Tot", value=tot_d.isoformat(), disabled=True, key=f"tot_disp_{batch_id}")
-            elif periode == "Laatste 7 dagen":
-                van_d, tot_d = vandaag_d - pd.Timedelta(days=6), vandaag_d
-                col_p2.text_input("Van", value=van_d.isoformat(), disabled=True, key=f"van_disp_{batch_id}")
-                col_p3.text_input("Tot", value=tot_d.isoformat(), disabled=True, key=f"tot_disp_{batch_id}")
-            elif periode == "Laatste 30 dagen":
-                van_d, tot_d = vandaag_d - pd.Timedelta(days=29), vandaag_d
-                col_p2.text_input("Van", value=van_d.isoformat(), disabled=True, key=f"van_disp_{batch_id}")
-                col_p3.text_input("Tot", value=tot_d.isoformat(), disabled=True, key=f"tot_disp_{batch_id}")
-            elif periode == "Hele looptijd":
-                van_d, tot_d = date(2020, 1, 1), vandaag_d
-                col_p2.text_input("Van", value="—", disabled=True, key=f"van_disp_{batch_id}")
-                col_p3.text_input("Tot", value=vandaag_d.isoformat(), disabled=True, key=f"tot_disp_{batch_id}")
-            else:  # Aangepast
-                van_d = col_p2.date_input("Van", value=vandaag_d - pd.Timedelta(days=29), key=f"van_{batch_id}")
-                tot_d = col_p3.date_input("Tot", value=vandaag_d, key=f"tot_{batch_id}")
-
-            if isinstance(van_d, pd.Timestamp): van_d = van_d.date()
-            if isinstance(tot_d, pd.Timestamp): tot_d = tot_d.date()
-
-            # --- Rapportage ---
+        if gewijzigd:
             try:
-                stats = cached_batch_stats(batch_id, van_d.isoformat(), tot_d.isoformat())
+                supabase.table('config').upsert(
+                    {"key": "paused_batches", "value": json.dumps(sorted(nieuwe_paused))}
+                ).execute()
+                st.cache_data.clear()
+                st.success("✅ Status bijgewerkt.")
+                time.sleep(0.8); st.rerun()
             except Exception as e:
-                st.error(f"Kan rapportage niet ophalen: {e}")
-                stats = None
+                st.error(f"Fout bij status wijzigen: {e}")
 
-            totaal = int(gekozen['totaal'])
-            wachtrij = int(gekozen['te_bellen'])
+        st.markdown("&nbsp;", unsafe_allow_html=True)
 
-            st.markdown(f"##### 📦 {batch_id}")
+        # --- Acties per batch (onomkeerbaar): reset / verwijderen ---
+        st.markdown("##### ⚙️ Acties per batch")
+        batch_ids = [b["batch_id"] for b in rijen]
+        akb = st.selectbox("Kies batch voor actie", batch_ids, key="actie_batch")
 
-            m1, m2, m3 = st.columns(3)
-            m1.metric("📞 Totaal in batch", f"{totaal:,}".replace(",", "."))
-            m2.metric("⏳ Nog te bellen", f"{wachtrij:,}".replace(",", "."))
-            m3.metric("📅 Gebeld in periode", f"{(stats['totaal_gebeld'] if stats else 0):,}".replace(",", "."))
+        hist = reset_history.get(akb, [])
+        if hist:
+            laatste = hist[-1]
+            st.caption(
+                f"♻️ Laatste reset: **{_nl_tijd(laatste.get('ts'))}** "
+                f"({laatste.get('leads', 0)} leads) · in totaal **{len(hist)}× gereset**"
+            )
+        else:
+            st.caption("♻️ Nog niet gereset")
 
-            if stats:
-                m4, m5, m6, m7 = st.columns(4)
-                m4.metric("✅ Succes", f"{stats['succes']:,}".replace(",", "."))
-                m5.metric("📵 Geen gehoor", f"{stats['no_answer']:,}".replace(",", "."))
-                m6.metric("❌ Mislukt", f"{stats['mislukt']:,}".replace(",", "."))
-                m7.metric("🚫 Foutief nummer", f"{stats.get('foutief', 0):,}".replace(",", "."))
+        col_r, col_d = st.columns(2)
 
-            st.markdown("&nbsp;", unsafe_allow_html=True)
+        if col_r.button("♻️ Reset Geen Gehoor", key=f"reset_{akb}"):
+            try:
+                res = supabase.table('leads').update({"status": "new", "result": None}) \
+                    .eq("batch_id", akb).in_("ended_reason", GEEN_GEHOOR_REDENEN) \
+                    .neq("sip_status", "404").execute()
+                aantal = len(res.data) if res.data else 0
+                hist.append({"ts": datetime.now(timezone.utc).isoformat(), "leads": aantal})
+                reset_history[akb] = hist
+                supabase.table('config').upsert(
+                    {"key": "reset_history", "value": json.dumps(reset_history)}).execute()
+                st.cache_data.clear()
+                st.success(f"✅ {aantal} leads in '{akb}' staan weer in de wachtrij.")
+                time.sleep(1.5); st.rerun()
+            except Exception as e:
+                st.error(f"Fout bij reset: {e}")
 
-            # --- Batch AAN/UIT voor de dialer ---
-            is_paused = batch_id in paused_list
-            col_t1, col_t2 = st.columns([2, 1])
-            if is_paused:
-                col_t1.warning("⏸️ Deze batch staat **UIT** — de dialer belt deze leads niet.")
-                if col_t2.button("▶️ Zet AAN", key=f"on_{batch_id}", use_container_width=True):
-                    try:
-                        nieuw = [b for b in paused_list if b != batch_id]
-                        supabase.table('config').upsert(
-                            {"key": "paused_batches", "value": json.dumps(nieuw)}).execute()
-                        st.cache_data.clear()
-                        st.success(f"▶️ Batch '{batch_id}' staat weer AAN.")
-                        time.sleep(1.2); st.rerun()
-                    except Exception as e:
-                        st.error(f"Fout bij aanzetten: {e}")
-            else:
-                col_t1.success("▶️ Deze batch staat **AAN** — de dialer belt deze leads.")
-                if col_t2.button("⏸️ Zet UIT", key=f"off_{batch_id}", use_container_width=True):
-                    try:
-                        nieuw = paused_list + [batch_id]
-                        supabase.table('config').upsert(
-                            {"key": "paused_batches", "value": json.dumps(nieuw)}).execute()
-                        st.cache_data.clear()
-                        st.success(f"⏸️ Batch '{batch_id}' staat nu UIT.")
-                        time.sleep(1.2); st.rerun()
-                    except Exception as e:
-                        st.error(f"Fout bij uitzetten: {e}")
-
-            st.markdown("&nbsp;", unsafe_allow_html=True)
-
-            # --- Reset-historie tonen ---
-            hist = reset_history.get(batch_id, [])
-            if hist:
-                laatste = hist[-1]
-                st.caption(
-                    f"♻️ Laatste reset: **{_nl_tijd(laatste.get('ts'))}** "
-                    f"({laatste.get('leads', 0)} leads) · in totaal **{len(hist)}× gereset**"
-                )
-            else:
-                st.caption("♻️ Nog niet gereset")
-
-            # --- Acties ---
-            col_r, col_d = st.columns(2)
-
-            if col_r.button("♻️ Reset Geen Gehoor", key=f"reset_{batch_id}"):
+        bevestig = col_d.checkbox("Bevestig verwijderen", key=f"conf_{akb}")
+        if col_d.button("🗑️ Verwijder Batch", key=f"del_{akb}"):
+            if bevestig:
                 try:
-                    res = supabase.table('leads').update({"status": "new", "result": None}) \
-                        .eq("batch_id", batch_id).in_("ended_reason", GEEN_GEHOOR_REDENEN) \
-                        .neq("sip_status", "404").execute()
-                    aantal = len(res.data) if res.data else 0
-                    # Reset-moment opslaan in config (tijd in UTC + aantal leads).
-                    hist.append({"ts": datetime.now(timezone.utc).isoformat(), "leads": aantal})
-                    reset_history[batch_id] = hist
-                    supabase.table('config').upsert(
-                        {"key": "reset_history", "value": json.dumps(reset_history)}).execute()
+                    supabase.table('leads').delete().eq("batch_id", akb).execute()
                     st.cache_data.clear()
-                    st.success(f"✅ {aantal} leads in '{batch_id}' staan weer in de wachtrij.")
+                    st.warning(f"🗑️ Batch '{akb}' is volledig verwijderd.")
                     time.sleep(1.5); st.rerun()
                 except Exception as e:
-                    st.error(f"Fout bij reset: {e}")
-
-            bevestig = col_d.checkbox("Bevestig verwijderen", key=f"conf_{batch_id}")
-            if col_d.button("🗑️ Verwijder Batch", key=f"del_{batch_id}"):
-                if bevestig:
-                    try:
-                        supabase.table('leads').delete().eq("batch_id", batch_id).execute()
-                        st.cache_data.clear()
-                        st.warning(f"🗑️ Batch '{batch_id}' is volledig verwijderd.")
-                        time.sleep(1.5); st.rerun()
-                    except Exception as e:
-                        st.error(f"Fout bij verwijderen: {e}")
-                else:
-                    st.info("Vink eerst 'Bevestig verwijderen' aan.")
+                    st.error(f"Fout bij verwijderen: {e}")
+            else:
+                st.info("Vink eerst 'Bevestig verwijderen' aan.")
 
 # --- 9. IMPORT MODULE ---
 @st.dialog("📊 Import resultaat")
