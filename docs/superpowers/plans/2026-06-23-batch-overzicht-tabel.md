@@ -37,8 +37,11 @@ Dit is een SQL-wijziging. **De agent schrijft géén code in deze task** — all
 - [ ] **Stap 1: Lever Harun deze SQL aan**
 
 ```sql
--- Oude varianten weggooien (functie-naam kan overloaded zijn).
-drop function if exists batches_overzicht();
+-- LET OP: de bestaande no-arg functie batches_overzicht() NIET weggooien.
+-- Het nu live dashboard roept die nog aan; weggooien breekt productie tot de
+-- nieuwe code is gepusht. De nieuwe variant heeft 2 parameters en bestaat
+-- náást de oude (Postgres overload op argumentaantal). We droppen alleen de
+-- 2-arg variant, voor het geval je dit script opnieuw draait.
 drop function if exists batches_overzicht(timestamptz, timestamptz);
 
 create or replace function batches_overzicht(van timestamptz, tot timestamptz)
