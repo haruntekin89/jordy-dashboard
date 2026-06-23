@@ -901,6 +901,44 @@ with st.expander("📊 Batch Rapportage", expanded=False):
                     st.info("Vink eerst 'Bevestig verwijderen' aan.")
 
 # --- 9. IMPORT MODULE ---
+@st.dialog("📊 Import resultaat")
+def toon_import_resultaat(r):
+    if r.get("soort") == "leads":
+        st.markdown(f"**Batch:** `{r['batch_id']}`")
+        a, b = st.columns(2)
+        a.metric("📄 Regels in bestand", r["totaal"])
+        b.metric("🆕 Toegevoegd aan wachtrij", r["toegevoegd"])
+        c, d = st.columns(2)
+        c.metric("🔄 Dubbel (al in systeem)", r["dubbel"])
+        d.metric("⛔ Op blacklist", r["blacklist"])
+        e, f = st.columns(2)
+        e.metric("⚠️ Ongeldig nummer", r["ongeldig"])
+        f.metric("❌ Mislukt (DB-fout)", r["mislukt"])
+        if r["mislukt"]:
+            st.error(f"{r['mislukt']} leads konden NIET worden opgeslagen "
+                     "(databasefout — zie logs).")
+        elif r["toegevoegd"] == 0:
+            st.warning("Er is **niets** aan de wachtrij toegevoegd. Alle nummers "
+                       "waren al in het systeem (dubbel), op de blacklist, of ongeldig. "
+                       "Daarom steeg de wachtrij niet.")
+        else:
+            st.success(f"{r['toegevoegd']} nieuwe leads staan nu in de wachtrij.")
+    else:
+        st.markdown("**Blacklist bijgewerkt**")
+        a, b = st.columns(2)
+        a.metric("📄 Regels in bestand", r["totaal"])
+        b.metric("⛔ Nieuw op blacklist", r["nieuw"])
+        c, d = st.columns(2)
+        c.metric("🔄 Stond er al op", r["dubbel"])
+        d.metric("⚠️ Ongeldig", r["ongeldig"])
+    if st.button("Sluiten"):
+        st.session_state.pop("import_resultaat", None)
+        st.rerun()
+
+# Pop-up tonen zodra een import net klaar is (overleeft de auto-refresh)
+if "import_resultaat" in st.session_state:
+    toon_import_resultaat(st.session_state["import_resultaat"])
+
 with st.expander("📂 Leads & Blacklist Importeren", expanded=False):
     import_doel = st.radio("Waar wil je dit bestand importeren?", ["📞 Leads voor Dialer", "⛔ Nummers voor Blacklist"])
     uploaded_file = st.file_uploader(f"Upload Excel/CSV voor {import_doel}", type=['xlsx', 'csv'])
@@ -979,15 +1017,16 @@ with st.expander("📂 Leads & Blacklist Importeren", expanded=False):
                                 fouten += len(chunk)
                                 print(f"Batch fout: {e}")
 
-                    if fouten:
-                        st.error(f"⚠️ {fouten} leads konden NIET worden toegevoegd "
-                                 f"(databasefout — zie logs). Echt in wachtrij: {c_new - fouten}.")
-                    st.success(f"✅ Import voltooid! Batch: **{batch_id}**")
-                    c1, c2, c3, c4 = st.columns(4)
-                    c1.metric("🆕 Toegevoegd", c_new - fouten)
-                    c2.metric("🔄 Dubbel", c_dup)
-                    c3.metric("⛔ Blacklist", c_black)
-                    c4.metric("⚠️ Ongeldig", c_inv)
+                    st.session_state["import_resultaat"] = {
+                        "soort": "leads",
+                        "batch_id": batch_id,
+                        "totaal": len(df),
+                        "toegevoegd": c_new - fouten,
+                        "dubbel": c_dup,
+                        "blacklist": c_black,
+                        "ongeldig": c_inv,
+                        "mislukt": fouten,
+                    }
 
                 else:
                     clean_phones = [normalize_number(row[phone_col]) for _, row in df.iterrows()]
@@ -1013,15 +1052,16 @@ with st.expander("📂 Leads & Blacklist Importeren", expanded=False):
                                 supabase.table('blacklist').upsert(to_blacklist, on_conflict='phone', ignore_duplicates=True).execute()
                             except: pass
 
-                    st.success("✅ Blacklist bijgewerkt!")
-                    c1, c2, c3 = st.columns(3)
-                    c1.metric("⛔ Nieuw op Blacklist", c_new)
-                    c2.metric("🔄 Stond er al op", c_dup)
-                    c3.metric("⚠️ Ongeldig", c_inv)
+                    st.session_state["import_resultaat"] = {
+                        "soort": "blacklist",
+                        "totaal": len(df),
+                        "nieuw": c_new,
+                        "dubbel": c_dup,
+                        "ongeldig": c_inv,
+                    }
 
                 progress.progress(1.0)
                 st.cache_data.clear()
-                time.sleep(2)
                 st.rerun()
 
         except Exception as e:
