@@ -733,6 +733,11 @@ with st.expander("📊 Batch Rapportage", expanded=False):
             b["batch_id"] == "oude_import",    # oude_import onderaan
         ))
 
+        # Status-labels: kleurbol + ▾-pijltje, zodat in één oogopslag zichtbaar is
+        # dat de cel een aanklikbaar dropdown-menu is.
+        ST_ACTIEF = "🟢 Actief ▾"
+        ST_INACTIEF = "🔴 Inactief ▾"
+
         # Bouw de tabel-data.
         tabel = []
         for b in rijen:
@@ -742,7 +747,7 @@ with st.expander("📊 Batch Rapportage", expanded=False):
             conv = (sales / afgehandeld * 100) if afgehandeld else 0.0
             tabel.append({
                 "Batch": bid,
-                "Status": "Inactief" if bid in paused_list else "Actief",
+                "Status": ST_INACTIEF if bid in paused_list else ST_ACTIEF,
                 "Totaal": int(b.get("totaal", 0)),
                 "Afgehandeld": afgehandeld,
                 "Open": int(b.get("te_bellen", 0)),
@@ -762,7 +767,8 @@ with st.expander("📊 Batch Rapportage", expanded=False):
             key=f"batch_tabel_{periode}",
             column_config={
                 "Status": st.column_config.SelectboxColumn(
-                    "Status", options=["Actief", "Inactief"], required=True),
+                    "Status", options=[ST_ACTIEF, ST_INACTIEF], required=True,
+                    help="Klik om deze batch aan/uit te zetten voor de dialer"),
                 "Batch": st.column_config.TextColumn("Batch", disabled=True),
                 "Totaal": st.column_config.NumberColumn("Totaal", disabled=True),
                 "Afgehandeld": st.column_config.NumberColumn("Afgehandeld", disabled=True),
@@ -778,7 +784,7 @@ with st.expander("📊 Batch Rapportage", expanded=False):
         gewijzigd = False
         for _, rij in bewerkt.iterrows():
             bid = rij["Batch"]
-            wil_inactief = (rij["Status"] == "Inactief")
+            wil_inactief = ("Inactief" in str(rij["Status"]))
             nu_inactief = (bid in nieuwe_paused)
             if wil_inactief and not nu_inactief:
                 nieuwe_paused.add(bid); gewijzigd = True
