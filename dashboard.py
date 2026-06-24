@@ -831,7 +831,7 @@ with st.expander("📊 Batch Rapportage", expanded=False):
                 try:
                     res = supabase.table('leads').update({"status": "new", "result": None}) \
                         .eq("batch_id", akb).in_("ended_reason", GEEN_GEHOOR_REDENEN) \
-                        .neq("sip_status", "404").execute()
+                        .or_("sip_status.neq.404,sip_status.is.null").execute()
                     aantal = len(res.data) if res.data else 0
                     hist.append({"ts": datetime.now(timezone.utc).isoformat(), "leads": aantal})
                     reset_history[akb] = hist
