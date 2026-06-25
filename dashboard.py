@@ -355,8 +355,7 @@ def cached_dag_voortgang(vandaag_iso):
 @st.cache_data(ttl=300, show_spinner=False)
 def cached_batch_aggregaten(van_iso, paused_json):
     """Per actieve batch: gebeld/bereikt/succes/dood404 over laatste 14 dagen."""
-    paused = json.loads(paused_json)
-    actieve = _actieve_batches(paused)
+    actieve = _actieve_batches(paused_json)
     out = []
     for bid in actieve:
         base = lambda: supabase.table("leads").select("id", count="exact", head=True) \
@@ -374,8 +373,7 @@ def cached_batch_aggregaten(van_iso, paused_json):
 @st.cache_data(ttl=300, show_spinner=False)
 def cached_reset_info(paused_json):
     """Per batch: new-count, dagen sinds laatste poging, herbelbaar/dood aantal."""
-    paused = json.loads(paused_json)
-    actieve = _actieve_batches(paused)
+    actieve = _actieve_batches(paused_json)
     nu = datetime.now(timezone.utc)
     out = []
     for bid in actieve:
@@ -413,14 +411,19 @@ def cached_belbare_totaal(paused_json):
         q = q.not_.in_("batch_id", paused)
     return q.execute().count or 0
 
-@st.cache_data(ttl=600, show_spinner=False)
-def _actieve_batches(paused):
-    """Batch-id's die recent (14d) outbound gebeld zijn en niet gepauzeerd."""
-    van = (datetime.now(timezone.utc) - timedelta(days=14)).isoformat()
-    rows = fetch_all("leads", "batch_id")  # bestaande helper
-    ids = sorted({r["batch_id"] for r in rows if r.get("batch_id")
-                  and r["batch_id"] not in (paused or [])})
-    return ids
+def _actieve_batches(paused_json):
+    """Batch-id's met activiteit in de laatste 14 dagen, niet gepauzeerd.
+
+    Bron = server-RPC cached_batches_overzicht (snelle aggregatie) i.p.v. een
+    volledige leads-scan. paused_json = JSON-string. Niet zelf gecached: de
+    onderliggende RPC-helper is al @st.cache_data.
+    """
+    paused = set(json.loads(paused_json))
+    tot = datetime.now(timezone.utc).date()
+    van = tot - timedelta(days=14)
+    rows = cached_batches_overzicht(van.isoformat(), tot.isoformat())
+    return sorted({r["batch_id"] for r in rows
+                   if r.get("batch_id") and r["batch_id"] not in paused})
 
 # --- 4. STATUS CONTROLEREN ---
 current_status = cached_config("status", "UIT")
