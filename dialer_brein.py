@@ -206,3 +206,32 @@ def banner_checks(succes_nu, belbare_leads, verwachte_conversie,
                      f"normaal {baseline_conversie*100:.2f}%. Leads raken op/moe — "
                      f"laad nieuwe data bij."})
     return waarschuwingen
+
+
+def tempo_plan(uur_gewichten, venster_uren, max_cpm, vloer=10):
+    """Calls/min per uur: beste uur ≈ max_cpm, zwak uur ≈ vloer (lineair op gewicht)."""
+    if not venster_uren:
+        return {}
+    gewichten = {u: uur_gewichten.get(u, 1.0) for u in venster_uren}
+    max_g = max(gewichten.values()) or 1.0
+    plan = {}
+    for u in venster_uren:
+        cpm = vloer + (max_cpm - vloer) * (gewichten[u] / max_g)
+        plan[u] = int(max(vloer, min(max_cpm, round(cpm))))
+    return plan
+
+
+# Duplicaat van tempo_logica.py (server) — identiek houden (repos delen geen code).
+def dag_fractie(uur, minuut, venster_start=9, venster_eind=21):
+    """Deel van het belvenster van vandaag dat verstreken is (0..1)."""
+    lengte = venster_eind - venster_start
+    if lengte <= 0:
+        return 0.0
+    return max(0.0, min(1.0, ((uur + minuut / 60.0) - venster_start) / lengte))
+
+
+def week_verwacht(isoweekday, dag_fr, week_target=2000):
+    """Verwacht aantal successen tot nu deze week (lineair over 5 weekdagen)."""
+    if isoweekday >= 6:
+        return float(week_target)
+    return week_target * ((isoweekday - 1) + dag_fr) / 5.0

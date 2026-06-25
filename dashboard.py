@@ -412,6 +412,16 @@ def cached_belbare_totaal(paused_json):
         q = q.not_.in_("batch_id", paused)
     return q.execute().count or 0
 
+@st.cache_data(ttl=120, show_spinner=False)
+def cached_week_succes(week_iso):
+    """Alle SUCCES deze week (ma 00:00 NL → nu), op ended_at."""
+    nu_nl = datetime.now(NL_TZ or timezone.utc)
+    maandag = (nu_nl - timedelta(days=nu_nl.isoweekday() - 1)).replace(
+        hour=0, minute=0, second=0, microsecond=0)
+    s_iso = maandag.astimezone(timezone.utc).isoformat()
+    return supabase.table("leads").select("id", count="exact", head=True) \
+        .eq("result", "SUCCES").gte("ended_at", s_iso).execute().count or 0
+
 # --- 4. STATUS CONTROLEREN ---
 current_status = cached_config("status", "UIT")
 motor_heartbeat = cached_config("motor_heartbeat")
@@ -514,6 +524,55 @@ else:
     c2.metric("Verwacht nu (curve)", f"{verwacht:.0f}", k["status"])
     c3.metric("Tempo-advies", k["tempo"])
     st.info(f"📊 {k['tekst']}")
+
+    # --- Tempo-sturing (concreet + aan/uit) ---
+    st.markdown("### Tempo")
+    _tmax_cfg = cached_config("tempo_max", "120")
+    try:
+        _tmax_default = int(_tmax_cfg) if _tmax_cfg else 120
+    except (ValueError, TypeError):
+        _tmax_default = 120
+    tempo_max = st.number_input("Max tempo (calls/min)", min_value=10, max_value=300,
+                                value=_tmax_default, step=5, key="tempo_max_input")
+    tplan = dialer_brein.tempo_plan(gewichten, venster, int(tempo_max))
+    nu_cpm = tplan.get(nu_nl.hour, 10)
+    wk_succes = cached_week_succes(nu_nl.strftime("%G-W%V"))
+    wk_verwacht = dialer_brein.week_verwacht(
+        nu_nl.isoweekday(), dialer_brein.dag_fractie(nu_nl.hour, nu_nl.minute))
+    wk_status = ("achter" if wk_succes < wk_verwacht - 25
+                 else "voor" if wk_succes > wk_verwacht + 25 else "op koers")
+    tc1, tc2 = st.columns(2)
+    tc1.metric("Tempo nu (plan)", f"~{nu_cpm}/min")
+    tc2.metric("Deze week", f"{wk_succes} / 2000", wk_status)
+    _plan_uren = [u for u in venster if u in (9, 11, 13, 15, 16, 18, 20)]
+    st.caption("Plan per uur (calls/min): "
+               + " · ".join(f"{u}:00 ~{tplan[u]}" for u in _plan_uren if u in tplan))
+
+    _tempo_aan = str(cached_config("tempo_sturing_aan", "false")).lower() == "true"
+    st.caption("🟢 **AAN** — de dialer regelt het tempo zelf (binnen je max)."
+               if _tempo_aan else
+               "⚪ **UIT** — de dialer belt op jouw handmatige speed-schuif.")
+    if not _tempo_aan:
+        if st.button("▶️ Laat de dialer het tempo regelen", key="tempo_aan_btn"):
+            supabase.table("config").upsert({"key": "tempo_plan", "value": json.dumps(tplan)}).execute()
+            supabase.table("config").upsert({"key": "tempo_max", "value": str(int(tempo_max))}).execute()
+            supabase.table("config").upsert({"key": "tempo_sturing_aan", "value": "true"}).execute()
+            st.cache_data.clear()
+            st.success("Tempo-sturing AAN — de dialer regelt nu het tempo.")
+            time.sleep(1.2); st.rerun()
+    else:
+        tcc1, tcc2 = st.columns(2)
+        if tcc1.button("⏹️ Zet uit (mijn eigen speed)", key="tempo_uit_btn"):
+            supabase.table("config").upsert({"key": "tempo_sturing_aan", "value": "false"}).execute()
+            st.cache_data.clear()
+            st.success("Tempo-sturing UIT — terug naar je handmatige speed.")
+            time.sleep(1.2); st.rerun()
+        if tcc2.button("🔄 Ververs plan", key="tempo_ververs_btn"):
+            supabase.table("config").upsert({"key": "tempo_plan", "value": json.dumps(tplan)}).execute()
+            supabase.table("config").upsert({"key": "tempo_max", "value": str(int(tempo_max))}).execute()
+            st.cache_data.clear()
+            st.success("Tempo-plan ververst met de huidige stand.")
+            time.sleep(1.2); st.rerun()
 
     # Curve-grafiek
     df_curve = pd.DataFrame({"uur": venster,
