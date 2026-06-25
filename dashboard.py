@@ -305,6 +305,26 @@ def cached_config(key, default=None):
     except Exception:
         return default
 
+def reset_geen_gehoor(batch_id):
+    """Zet herbelbare geen-gehoor leads van een batch terug op 'new' (404 uitgesloten).
+    Werkt config.reset_history bij. Geeft het aantal teruggezette leads terug."""
+    res = supabase.table('leads').update({"status": "new", "result": None}) \
+        .eq("batch_id", batch_id).in_("ended_reason", GEEN_GEHOOR_REDENEN) \
+        .or_("sip_status.neq.404,sip_status.is.null").execute()
+    aantal = len(res.data) if res.data else 0
+    try:
+        hist = json.loads(cached_config("reset_history", "{}") or "{}")
+        if not isinstance(hist, dict):
+            hist = {}
+    except (ValueError, TypeError):
+        hist = {}
+    lst = hist.get(batch_id, [])
+    lst.append({"ts": datetime.now(timezone.utc).isoformat(), "leads": aantal})
+    hist[batch_id] = lst
+    supabase.table('config').upsert(
+        {"key": "reset_history", "value": json.dumps(hist)}).execute()
+    return aantal
+
 # --- 3b. SLIMME DIALER — READ-ONLY CACHED AGGREGATEN ---
 NL_BEREIKT = list(dialer_brein.BEREIKT_REDENEN)
 
@@ -329,17 +349,25 @@ def _meekijk_batches_raw():
 
 @st.cache_data(ttl=60, show_spinner=False)
 def cached_dag_voortgang(vandaag_iso):
-    """Successen/gebeld/bereikt van vandaag (NL-dag) tot nu."""
+    """Voortgang van vandaag (NL-dag). 'succes_nu' telt ALLE successen mee — ook
+    inbound (terugbellers) — want die tellen ook mee voor het 400-dagdoel. gebeld/
+    bereikt + succes_outbound_nu blijven outbound (voor de conversie-basis)."""
     vandaag = datetime.now(NL_TZ or timezone.utc).date()
     start_nl = datetime(vandaag.year, vandaag.month, vandaag.day, 0, 0,
                         tzinfo=NL_TZ or timezone.utc)
     s_iso = start_nl.astimezone(timezone.utc).isoformat()
+    e_iso = (start_nl + timedelta(days=1)).astimezone(timezone.utc).isoformat()
+    # Alle successen vandaag (in- én outbound) op de ended_at-dag → telt voor de 400.
+    succes = supabase.table("leads").select("id", count="exact", head=True) \
+        .eq("result", "SUCCES").gte("ended_at", s_iso).lt("ended_at", e_iso).execute().count or 0
+    # Outbound bel-effort (voor de conversie-basis), op first_attempt.
     base = lambda: supabase.table("leads").select("id", count="exact", head=True) \
         .gte("first_attempt", s_iso).eq("direction", "outbound")
     gebeld = base().execute().count or 0
-    succes = base().eq("result", "SUCCES").execute().count or 0
+    succes_outbound = base().eq("result", "SUCCES").execute().count or 0
     bereikt = base().in_("ended_reason", NL_BEREIKT).execute().count or 0
-    return {"succes_nu": succes, "gebeld_nu": gebeld, "bereikt_nu": bereikt}
+    return {"succes_nu": succes, "succes_outbound_nu": succes_outbound,
+            "gebeld_nu": gebeld, "bereikt_nu": bereikt}
 
 @st.cache_data(ttl=300, show_spinner=False)
 def cached_batch_aggregaten(van_iso, paused_json):
@@ -467,7 +495,8 @@ else:
         resets = dialer_brein.reset_voorstellen(reset_info)
 
         bereikt_nu = voortgang["bereikt_nu"] or 1
-        recente_conv = voortgang["succes_nu"] / bereikt_nu
+        # Conversie outbound-only houden (anders vertekent inbound-succes de banner).
+        recente_conv = voortgang["succes_outbound_nu"] / bereikt_nu
         tot_succes = sum(b["succes"] for b in batch_aggr)
         tot_bereikt = sum(b["bereikt"] for b in batch_aggr) or 1
         baseline_conv = tot_succes / tot_bereikt
@@ -480,7 +509,8 @@ else:
 
     # Koers
     c1, c2, c3 = st.columns(3)
-    c1.metric("Successen nu", voortgang["succes_nu"], f"doel {dialer_brein.DAGDOEL}")
+    c1.metric("Successen nu", voortgang["succes_nu"], f"doel {dialer_brein.DAGDOEL}",
+              help="Alle successen vandaag, inclusief inbound terugbellers.")
     c2.metric("Verwacht nu (curve)", f"{verwacht:.0f}", k["status"])
     c3.metric("Tempo-advies", k["tempo"])
     st.info(f"📊 {k['tekst']}")
@@ -498,12 +528,60 @@ else:
     else:
         st.caption("Nog geen batch-data.")
 
+    # Aan/uit: batch-sturing echt toepassen (snapshot van de gewichten naar config).
+    _sturing_aan = str(cached_config("batch_sturing_aan", "false")).lower() == "true"
+    st.caption("🟢 **AAN** — de dialer belt nu volgens deze gewichten."
+               if _sturing_aan else
+               "⚪ **UIT** — dit is alleen een voorstel; de dialer doet er niets mee.")
+    if not _sturing_aan:
+        if st.button("▶️ Pas batch-sturing toe", key="sturing_aan_btn"):
+            snap = {g["batch_id"]: g["gewicht"] for g in gewichten_b}
+            supabase.table("config").upsert({"key": "batch_gewichten", "value": json.dumps(snap)}).execute()
+            supabase.table("config").upsert({"key": "batch_sturing_aan", "value": "true"}).execute()
+            st.cache_data.clear()
+            st.success("Batch-sturing staat AAN — de dialer gebruikt nu deze gewichten.")
+            time.sleep(1.2); st.rerun()
+    else:
+        sc1, sc2 = st.columns(2)
+        if sc1.button("⏹️ Zet uit (terug naar normaal)", key="sturing_uit_btn"):
+            supabase.table("config").upsert({"key": "batch_sturing_aan", "value": "false"}).execute()
+            st.cache_data.clear()
+            st.success("Batch-sturing staat UIT — terug naar de normale werkwijze.")
+            time.sleep(1.2); st.rerun()
+        if sc2.button("🔄 Ververs gewichten", key="sturing_ververs_btn"):
+            snap = {g["batch_id"]: g["gewicht"] for g in gewichten_b}
+            supabase.table("config").upsert({"key": "batch_gewichten", "value": json.dumps(snap)}).execute()
+            st.cache_data.clear()
+            st.success("Gewichten ververst met de huidige stand.")
+            time.sleep(1.2); st.rerun()
+
     # Reset-voorstellen
     st.markdown("### Reset-voorstellen")
     resetbaar = [r for r in resets if r["resetbaar"]]
     if resetbaar:
         for r in resetbaar:
-            st.success(f"♻️ Batch **{r['batch_id']}**: {r['reden']}")
+            rc1, rc2 = st.columns([4, 1])
+            rc1.success(f"♻️ Batch **{r['batch_id']}**: {r['reden']}")
+            _bid = r["batch_id"]
+            if rc2.button("Reset nu", key=f"meekijk_reset_{_bid}"):
+                st.session_state[f"confirm_reset_{_bid}"] = True
+            if st.session_state.get(f"confirm_reset_{_bid}"):
+                st.warning(f"Weet je het zeker? ~{r['herbelbaar_count']} herbelbare leads van "
+                           f"'{_bid}' gaan terug op 'new'. Dode nummers (404) blijven uit. "
+                           "Dit kan niet ongedaan gemaakt worden.")
+                bc1, bc2 = st.columns(2)
+                if bc1.button("✅ Ja, reset nu", key=f"do_reset_{_bid}"):
+                    try:
+                        aantal = reset_geen_gehoor(_bid)
+                        st.session_state[f"confirm_reset_{_bid}"] = False
+                        st.cache_data.clear()
+                        st.success(f"✅ {aantal} leads van '{_bid}' staan weer in de wachtrij.")
+                        time.sleep(1.5); st.rerun()
+                    except Exception as e:
+                        st.error(f"Fout bij reset: {e}")
+                if bc2.button("Annuleren", key=f"cancel_reset_{_bid}"):
+                    st.session_state[f"confirm_reset_{_bid}"] = False
+                    st.rerun()
     else:
         st.caption("Geen batch klaar voor reset.")
     with st.expander("Alle batches (waarom wel/niet)"):
@@ -1009,14 +1087,7 @@ with st.expander("📊 Batch Rapportage", expanded=False):
 
             if col_r.button("♻️ Reset Geen Gehoor", key=f"reset_{akb}"):
                 try:
-                    res = supabase.table('leads').update({"status": "new", "result": None}) \
-                        .eq("batch_id", akb).in_("ended_reason", GEEN_GEHOOR_REDENEN) \
-                        .or_("sip_status.neq.404,sip_status.is.null").execute()
-                    aantal = len(res.data) if res.data else 0
-                    hist.append({"ts": datetime.now(timezone.utc).isoformat(), "leads": aantal})
-                    reset_history[akb] = hist
-                    supabase.table('config').upsert(
-                        {"key": "reset_history", "value": json.dumps(reset_history)}).execute()
+                    aantal = reset_geen_gehoor(akb)
                     st.cache_data.clear()
                     st.success(f"✅ {aantal} leads in '{akb}' staan weer in de wachtrij.")
                     time.sleep(1.5); st.rerun()
