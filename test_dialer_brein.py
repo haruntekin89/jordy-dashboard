@@ -1,5 +1,5 @@
 """Console-test voor dialer_brein (run: python3 test_dialer_brein.py)."""
-from dialer_brein import is_bereikt, is_dood_nummer, is_herbelbaar, uur_gewichten, verwachte_curve, verwacht_tot_nu, koers, batch_scores, batch_gewichten, reset_voorstellen, banner_checks
+from dialer_brein import is_bereikt, is_dood_nummer, is_herbelbaar, uur_gewichten, verwachte_curve, verwacht_tot_nu, koers, batch_scores, batch_gewichten, reset_voorstellen, banner_checks, tempo_plan, dag_fractie as db_dag_fractie, week_verwacht as db_week_verwacht
 
 
 def test_is_bereikt():
@@ -204,6 +204,25 @@ def test_banner_stil_als_alles_goed():
     w = banner_checks(succes_nu=380, belbare_leads=50000, verwachte_conversie=0.01,
                       recente_conversie=0.011, baseline_conversie=0.01, dagdoel=400)
     assert w == []
+
+
+def test_tempo_plan_vorm():
+    # uur 16 (gewicht 2) is best → max; uur 19 (gewicht 0.5) laag
+    g = {9: 1.0, 16: 2.0, 19: 0.5}
+    plan = tempo_plan(g, [9, 16, 19], max_cpm=120, vloer=10)
+    assert plan[16] == 120                       # beste uur = max
+    assert plan[19] < plan[9] < plan[16]         # oploop volgt gewicht
+    assert all(10 <= v <= 120 for v in plan.values())
+
+
+def test_tempo_plan_leeg_venster():
+    assert tempo_plan({}, [], max_cpm=120) == {}
+
+
+def test_db_dag_fractie_en_week_verwacht():
+    assert db_dag_fractie(15, 0) == 0.5
+    assert db_week_verwacht(3, 0.5) == 1000.0
+    assert db_week_verwacht(6, 0.0) == 2000.0
 
 
 if __name__ == "__main__":
