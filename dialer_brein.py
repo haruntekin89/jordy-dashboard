@@ -115,3 +115,44 @@ def koers(succes_nu, verwacht_nu, dagdoel=DAGDOEL, marge=5):
                 "tekst": f"{verschil:.0f} voor op de curve → tempo omlaag."}
     return {"status": "op koers", "tempo": "gelijk", "verschil": verschil,
             "tekst": "Op koers → tempo gelijk houden."}
+
+
+def batch_scores(batch_rijen, min_calls=150):
+    """Scoor elke batch op conversie PER BEREIKT MENS (haalt dode-nummer-confound eruit)."""
+    out = []
+    for r in batch_rijen:
+        gebeld = r.get("gebeld", 0)
+        bereikt = r.get("bereikt", 0)
+        conversie = (r.get("succes", 0) / bereikt) if bereikt > 0 else 0.0
+        dood_pct = (r.get("dood404", 0) / gebeld) if gebeld > 0 else 0.0
+        out.append({
+            "batch_id": r["batch_id"],
+            "conversie": round(conversie, 4),
+            "dood_pct": round(dood_pct, 4),
+            "genoeg_data": gebeld >= min_calls,
+        })
+    return out
+
+
+def batch_gewichten(scores, dood_pauze_pct=0.40, klem=(0.5, 1.5)):
+    """Zachte, geklemde gewichten: meer op goede batches, pauze-voorstel bij veel dood."""
+    geldig = [s for s in scores if s["genoeg_data"] and s["conversie"] > 0]
+    gem = (sum(s["conversie"] for s in geldig) / len(geldig)) if geldig else 0.0
+    lo, hi = klem
+    out = []
+    for s in scores:
+        if s["dood_pct"] >= dood_pauze_pct:
+            out.append({"batch_id": s["batch_id"], "gewicht": 0.0,
+                        "actie": f"pauze-voorstel ({s['dood_pct']*100:.0f}% dood nummers)"})
+        elif not s["genoeg_data"]:
+            out.append({"batch_id": s["batch_id"], "gewicht": 1.0,
+                        "actie": "neutraal (te weinig data)"})
+        elif gem == 0:
+            out.append({"batch_id": s["batch_id"], "gewicht": 1.0,
+                        "actie": "neutraal (nog geen gemiddelde)"})
+        else:
+            w = max(lo, min(hi, s["conversie"] / gem))
+            label = "meer" if w > 1.0 else "minder" if w < 1.0 else "gelijk"
+            out.append({"batch_id": s["batch_id"], "gewicht": round(w, 2),
+                        "actie": f"{label} (conversie {s['conversie']*100:.2f}% vs gem {gem*100:.2f}%)"})
+    return out

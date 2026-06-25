@@ -1,5 +1,5 @@
 """Console-test voor dialer_brein (run: python3 test_dialer_brein.py)."""
-from dialer_brein import is_bereikt, is_dood_nummer, is_herbelbaar, uur_gewichten, verwachte_curve, verwacht_tot_nu, koers
+from dialer_brein import is_bereikt, is_dood_nummer, is_herbelbaar, uur_gewichten, verwachte_curve, verwacht_tot_nu, koers, batch_scores, batch_gewichten
 
 
 def test_is_bereikt():
@@ -111,6 +111,39 @@ def test_koers_op_koers():
     k = koers(succes_nu=331, verwacht_nu=330, dagdoel=400)   # binnen marge
     assert k["status"] == "op koers"
     assert k["tempo"] == "gelijk"
+
+
+def test_batch_scores_conversie_per_bereikt_mens():
+    rijen = [{"batch_id": "A", "gebeld": 1000, "bereikt": 200, "succes": 4, "dood404": 50}]
+    s = batch_scores(rijen, min_calls=150)[0]
+    assert s["conversie"] == 0.02              # 4/200, NIET 4/1000
+    assert s["dood_pct"] == 0.05               # 50/1000
+    assert s["genoeg_data"] is True
+
+
+def test_batch_gewichten_zacht_en_geklemd():
+    # batch B converteert 2x het gemiddelde => meer gewicht, maar geklemd op 1.5
+    scores = [
+        {"batch_id": "A", "conversie": 0.01, "dood_pct": 0.02, "genoeg_data": True},
+        {"batch_id": "B", "conversie": 0.04, "dood_pct": 0.02, "genoeg_data": True},
+    ]
+    g = {r["batch_id"]: r for r in batch_gewichten(scores, klem=(0.5, 1.5))}
+    assert g["B"]["gewicht"] == 1.5            # geklemd (zacht), niet 2.5+
+    assert g["A"]["gewicht"] < 1.0
+
+
+def test_batch_gewichten_dood_pauze_voorstel():
+    scores = [{"batch_id": "Z", "conversie": 0.0, "dood_pct": 0.61, "genoeg_data": True}]
+    g = batch_gewichten(scores, dood_pauze_pct=0.40)[0]
+    assert g["gewicht"] == 0.0
+    assert "dood" in g["actie"].lower()
+
+
+def test_batch_gewichten_te_weinig_data_neutraal():
+    scores = [{"batch_id": "N", "conversie": 0.09, "dood_pct": 0.0, "genoeg_data": False}]
+    g = batch_gewichten(scores)[0]
+    assert g["gewicht"] == 1.0                 # geen gok op ruis
+    assert "data" in g["actie"].lower()
 
 
 if __name__ == "__main__":
