@@ -518,6 +518,33 @@ else:
     else:
         st.caption("Nog geen batch-data.")
 
+    # Aan/uit: batch-sturing echt toepassen (snapshot van de gewichten naar config).
+    _sturing_aan = str(cached_config("batch_sturing_aan", "false")).lower() == "true"
+    st.caption("🟢 **AAN** — de dialer belt nu volgens deze gewichten."
+               if _sturing_aan else
+               "⚪ **UIT** — dit is alleen een voorstel; de dialer doet er niets mee.")
+    sc1, sc2 = st.columns(2)
+    if not _sturing_aan:
+        if sc1.button("▶️ Pas batch-sturing toe", key="sturing_aan_btn"):
+            snap = {g["batch_id"]: g["gewicht"] for g in gewichten_b}
+            supabase.table("config").upsert({"key": "batch_gewichten", "value": json.dumps(snap)}).execute()
+            supabase.table("config").upsert({"key": "batch_sturing_aan", "value": "true"}).execute()
+            st.cache_data.clear()
+            st.success("Batch-sturing staat AAN — de dialer gebruikt nu deze gewichten.")
+            time.sleep(1.2); st.rerun()
+    else:
+        if sc1.button("⏹️ Zet uit (terug naar normaal)", key="sturing_uit_btn"):
+            supabase.table("config").upsert({"key": "batch_sturing_aan", "value": "false"}).execute()
+            st.cache_data.clear()
+            st.success("Batch-sturing staat UIT — terug naar de normale werkwijze.")
+            time.sleep(1.2); st.rerun()
+        if sc2.button("🔄 Ververs gewichten", key="sturing_ververs_btn"):
+            snap = {g["batch_id"]: g["gewicht"] for g in gewichten_b}
+            supabase.table("config").upsert({"key": "batch_gewichten", "value": json.dumps(snap)}).execute()
+            st.cache_data.clear()
+            st.success("Gewichten ververst met de huidige stand.")
+            time.sleep(1.2); st.rerun()
+
     # Reset-voorstellen
     st.markdown("### Reset-voorstellen")
     resetbaar = [r for r in resets if r["resetbaar"]]
