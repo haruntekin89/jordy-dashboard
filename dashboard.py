@@ -349,17 +349,25 @@ def _meekijk_batches_raw():
 
 @st.cache_data(ttl=60, show_spinner=False)
 def cached_dag_voortgang(vandaag_iso):
-    """Successen/gebeld/bereikt van vandaag (NL-dag) tot nu."""
+    """Voortgang van vandaag (NL-dag). 'succes_nu' telt ALLE successen mee — ook
+    inbound (terugbellers) — want die tellen ook mee voor het 400-dagdoel. gebeld/
+    bereikt + succes_outbound_nu blijven outbound (voor de conversie-basis)."""
     vandaag = datetime.now(NL_TZ or timezone.utc).date()
     start_nl = datetime(vandaag.year, vandaag.month, vandaag.day, 0, 0,
                         tzinfo=NL_TZ or timezone.utc)
     s_iso = start_nl.astimezone(timezone.utc).isoformat()
+    e_iso = (start_nl + timedelta(days=1)).astimezone(timezone.utc).isoformat()
+    # Alle successen vandaag (in- én outbound) op de ended_at-dag → telt voor de 400.
+    succes = supabase.table("leads").select("id", count="exact", head=True) \
+        .eq("result", "SUCCES").gte("ended_at", s_iso).lt("ended_at", e_iso).execute().count or 0
+    # Outbound bel-effort (voor de conversie-basis), op first_attempt.
     base = lambda: supabase.table("leads").select("id", count="exact", head=True) \
         .gte("first_attempt", s_iso).eq("direction", "outbound")
     gebeld = base().execute().count or 0
-    succes = base().eq("result", "SUCCES").execute().count or 0
+    succes_outbound = base().eq("result", "SUCCES").execute().count or 0
     bereikt = base().in_("ended_reason", NL_BEREIKT).execute().count or 0
-    return {"succes_nu": succes, "gebeld_nu": gebeld, "bereikt_nu": bereikt}
+    return {"succes_nu": succes, "succes_outbound_nu": succes_outbound,
+            "gebeld_nu": gebeld, "bereikt_nu": bereikt}
 
 @st.cache_data(ttl=300, show_spinner=False)
 def cached_batch_aggregaten(van_iso, paused_json):
@@ -487,7 +495,8 @@ else:
         resets = dialer_brein.reset_voorstellen(reset_info)
 
         bereikt_nu = voortgang["bereikt_nu"] or 1
-        recente_conv = voortgang["succes_nu"] / bereikt_nu
+        # Conversie outbound-only houden (anders vertekent inbound-succes de banner).
+        recente_conv = voortgang["succes_outbound_nu"] / bereikt_nu
         tot_succes = sum(b["succes"] for b in batch_aggr)
         tot_bereikt = sum(b["bereikt"] for b in batch_aggr) or 1
         baseline_conv = tot_succes / tot_bereikt
@@ -500,7 +509,8 @@ else:
 
     # Koers
     c1, c2, c3 = st.columns(3)
-    c1.metric("Successen nu", voortgang["succes_nu"], f"doel {dialer_brein.DAGDOEL}")
+    c1.metric("Successen nu", voortgang["succes_nu"], f"doel {dialer_brein.DAGDOEL}",
+              help="Alle successen vandaag, inclusief inbound terugbellers.")
     c2.metric("Verwacht nu (curve)", f"{verwacht:.0f}", k["status"])
     c3.metric("Tempo-advies", k["tempo"])
     st.info(f"📊 {k['tekst']}")
