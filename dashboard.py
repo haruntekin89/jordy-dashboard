@@ -392,11 +392,11 @@ def cached_reset_info(paused_json):
             dagen = 999.0
         # herbelbaar = gebelde, niet-new, niet-bereikt, niet-404
         gebeld = supabase.table("leads").select("id", count="exact", head=True) \
-            .eq("batch_id", bid).neq("status", "new").execute().count or 0
+            .eq("batch_id", bid).neq("status", "new").eq("direction", "outbound").execute().count or 0
         bereikt = supabase.table("leads").select("id", count="exact", head=True) \
-            .eq("batch_id", bid).in_("ended_reason", NL_BEREIKT).execute().count or 0
+            .eq("batch_id", bid).in_("ended_reason", NL_BEREIKT).eq("direction", "outbound").execute().count or 0
         dood = supabase.table("leads").select("id", count="exact", head=True) \
-            .eq("batch_id", bid).eq("sip_status", "404").execute().count or 0
+            .eq("batch_id", bid).eq("sip_status", "404").eq("direction", "outbound").execute().count or 0
         herbelbaar = max(0, gebeld - bereikt - dood)
         out.append({"batch_id": bid, "new_count": new_count,
                     "laatste_poging_dagen": round(dagen, 1),
