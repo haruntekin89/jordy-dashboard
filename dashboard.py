@@ -7,6 +7,7 @@ import io
 from datetime import datetime, date, timedelta, timezone
 import json
 import re
+import dialer_brein
 
 # Tijdzone: de database slaat tijden in UTC op; we tonen alles in Nederlandse tijd.
 try:
@@ -303,6 +304,123 @@ def cached_config(key, default=None):
         return res.data[0]['value'] if res.data else default
     except Exception:
         return default
+
+# --- 3b. SLIMME DIALER — READ-ONLY CACHED AGGREGATEN ---
+NL_BEREIKT = list(dialer_brein.BEREIKT_REDENEN)
+
+def _utc_range_for_nl_hour(dag_date, nl_uur):
+    """Geef (start_utc_iso, eind_utc_iso) voor één NL-uur op een NL-dag."""
+    # NL-uur nl_uur op dag dag_date → UTC = nl_uur - 2 (CEST). Veilig via zoneinfo:
+    start_nl = datetime(dag_date.year, dag_date.month, dag_date.day, nl_uur, 0,
+                        tzinfo=NL_TZ or timezone.utc)
+    eind_nl = start_nl + timedelta(hours=1)
+    return (start_nl.astimezone(timezone.utc).isoformat(),
+            eind_nl.astimezone(timezone.utc).isoformat())
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def cached_daguur_rijen(van_iso):
+    """Per (NL-dag, NL-uur) het aantal gebelde leads + successen, laatste 14 dagen."""
+    vandaag = datetime.now(NL_TZ or timezone.utc).date()
+    rijen = []
+    for d in range(14, -1, -1):
+        dag = vandaag - timedelta(days=d)
+        for nl_uur in range(7, 22):
+            s_iso, e_iso = _utc_range_for_nl_hour(dag, nl_uur)
+            gebeld = supabase.table("leads").select("id", count="exact", head=True) \
+                .gte("first_attempt", s_iso).lt("first_attempt", e_iso) \
+                .eq("direction", "outbound").execute().count or 0
+            if gebeld == 0:
+                continue
+            succes = supabase.table("leads").select("id", count="exact", head=True) \
+                .gte("first_attempt", s_iso).lt("first_attempt", e_iso) \
+                .eq("direction", "outbound").eq("result", "SUCCES").execute().count or 0
+            rijen.append({"datum": dag.isoformat(), "weekdag": dag.weekday(),
+                          "uur": nl_uur, "gebeld": gebeld, "succes": succes})
+    return rijen
+
+@st.cache_data(ttl=60, show_spinner=False)
+def cached_dag_voortgang(vandaag_iso):
+    """Successen/gebeld/bereikt van vandaag (NL-dag) tot nu."""
+    vandaag = datetime.now(NL_TZ or timezone.utc).date()
+    start_nl = datetime(vandaag.year, vandaag.month, vandaag.day, 0, 0,
+                        tzinfo=NL_TZ or timezone.utc)
+    s_iso = start_nl.astimezone(timezone.utc).isoformat()
+    base = lambda: supabase.table("leads").select("id", count="exact", head=True) \
+        .gte("first_attempt", s_iso).eq("direction", "outbound")
+    gebeld = base().execute().count or 0
+    succes = base().eq("result", "SUCCES").execute().count or 0
+    bereikt = base().in_("ended_reason", NL_BEREIKT).execute().count or 0
+    return {"succes_nu": succes, "gebeld_nu": gebeld, "bereikt_nu": bereikt}
+
+@st.cache_data(ttl=300, show_spinner=False)
+def cached_batch_aggregaten(van_iso, paused_json):
+    """Per actieve batch: gebeld/bereikt/succes/dood404 over laatste 14 dagen."""
+    paused = json.loads(paused_json)
+    actieve = _actieve_batches(paused)
+    out = []
+    for bid in actieve:
+        base = lambda: supabase.table("leads").select("id", count="exact", head=True) \
+            .eq("batch_id", bid).gte("first_attempt", van_iso).eq("direction", "outbound")
+        gebeld = base().execute().count or 0
+        if gebeld == 0:
+            continue
+        succes = base().eq("result", "SUCCES").execute().count or 0
+        bereikt = base().in_("ended_reason", NL_BEREIKT).execute().count or 0
+        dood = base().eq("sip_status", "404").execute().count or 0
+        out.append({"batch_id": bid, "gebeld": gebeld, "bereikt": bereikt,
+                    "succes": succes, "dood404": dood})
+    return out
+
+@st.cache_data(ttl=300, show_spinner=False)
+def cached_reset_info(paused_json):
+    """Per batch: new-count, dagen sinds laatste poging, herbelbaar/dood aantal."""
+    paused = json.loads(paused_json)
+    actieve = _actieve_batches(paused)
+    nu = datetime.now(timezone.utc)
+    out = []
+    for bid in actieve:
+        new_count = supabase.table("leads").select("id", count="exact", head=True) \
+            .eq("batch_id", bid).eq("status", "new").execute().count or 0
+        # laatste poging (max first_attempt) in deze batch
+        laatste = supabase.table("leads").select("first_attempt") \
+            .eq("batch_id", bid).not_.is_("first_attempt", "null") \
+            .order("first_attempt", desc=True).limit(1).execute().data
+        if laatste and laatste[0].get("first_attempt"):
+            lt = datetime.fromisoformat(laatste[0]["first_attempt"])
+            if lt.tzinfo is None:
+                lt = lt.replace(tzinfo=timezone.utc)
+            dagen = (nu - lt).total_seconds() / 86400.0
+        else:
+            dagen = 999.0
+        # herbelbaar = gebelde, niet-new, niet-bereikt, niet-404
+        gebeld = supabase.table("leads").select("id", count="exact", head=True) \
+            .eq("batch_id", bid).neq("status", "new").execute().count or 0
+        bereikt = supabase.table("leads").select("id", count="exact", head=True) \
+            .eq("batch_id", bid).in_("ended_reason", NL_BEREIKT).execute().count or 0
+        dood = supabase.table("leads").select("id", count="exact", head=True) \
+            .eq("batch_id", bid).eq("sip_status", "404").execute().count or 0
+        herbelbaar = max(0, gebeld - bereikt - dood)
+        out.append({"batch_id": bid, "new_count": new_count,
+                    "laatste_poging_dagen": round(dagen, 1),
+                    "herbelbaar_count": herbelbaar, "dood_count": dood})
+    return out
+
+@st.cache_data(ttl=300, show_spinner=False)
+def cached_belbare_totaal(paused_json):
+    paused = json.loads(paused_json)
+    q = supabase.table("leads").select("id", count="exact", head=True).eq("status", "new")
+    if paused:
+        q = q.not_.in_("batch_id", paused)
+    return q.execute().count or 0
+
+@st.cache_data(ttl=600, show_spinner=False)
+def _actieve_batches(paused):
+    """Batch-id's die recent (14d) outbound gebeld zijn en niet gepauzeerd."""
+    van = (datetime.now(timezone.utc) - timedelta(days=14)).isoformat()
+    rows = fetch_all("leads", "batch_id")  # bestaande helper
+    ids = sorted({r["batch_id"] for r in rows if r.get("batch_id")
+                  and r["batch_id"] not in (paused or [])})
+    return ids
 
 # --- 4. STATUS CONTROLEREN ---
 current_status = cached_config("status", "UIT")
