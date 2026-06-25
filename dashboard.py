@@ -550,7 +550,28 @@ else:
     resetbaar = [r for r in resets if r["resetbaar"]]
     if resetbaar:
         for r in resetbaar:
-            st.success(f"♻️ Batch **{r['batch_id']}**: {r['reden']}")
+            rc1, rc2 = st.columns([4, 1])
+            rc1.success(f"♻️ Batch **{r['batch_id']}**: {r['reden']}")
+            _bid = r["batch_id"]
+            if rc2.button("Reset nu", key=f"meekijk_reset_{_bid}"):
+                st.session_state[f"confirm_reset_{_bid}"] = True
+            if st.session_state.get(f"confirm_reset_{_bid}"):
+                st.warning(f"Weet je het zeker? ~{r['herbelbaar_count']} herbelbare leads van "
+                           f"'{_bid}' gaan terug op 'new'. Dode nummers (404) blijven uit. "
+                           "Dit kan niet ongedaan gemaakt worden.")
+                bc1, bc2 = st.columns(2)
+                if bc1.button("✅ Ja, reset nu", key=f"do_reset_{_bid}"):
+                    try:
+                        aantal = reset_geen_gehoor(_bid)
+                        st.session_state[f"confirm_reset_{_bid}"] = False
+                        st.cache_data.clear()
+                        st.success(f"✅ {aantal} leads van '{_bid}' staan weer in de wachtrij.")
+                        time.sleep(1.5); st.rerun()
+                    except Exception as e:
+                        st.error(f"Fout bij reset: {e}")
+                if bc2.button("Annuleren", key=f"cancel_reset_{_bid}"):
+                    st.session_state[f"confirm_reset_{_bid}"] = False
+                    st.rerun()
     else:
         st.caption("Geen batch klaar voor reset.")
     with st.expander("Alle batches (waarom wel/niet)"):
