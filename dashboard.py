@@ -305,6 +305,26 @@ def cached_config(key, default=None):
     except Exception:
         return default
 
+def reset_geen_gehoor(batch_id):
+    """Zet herbelbare geen-gehoor leads van een batch terug op 'new' (404 uitgesloten).
+    Werkt config.reset_history bij. Geeft het aantal teruggezette leads terug."""
+    res = supabase.table('leads').update({"status": "new", "result": None}) \
+        .eq("batch_id", batch_id).in_("ended_reason", GEEN_GEHOOR_REDENEN) \
+        .or_("sip_status.neq.404,sip_status.is.null").execute()
+    aantal = len(res.data) if res.data else 0
+    try:
+        hist = json.loads(cached_config("reset_history", "{}") or "{}")
+        if not isinstance(hist, dict):
+            hist = {}
+    except (ValueError, TypeError):
+        hist = {}
+    lst = hist.get(batch_id, [])
+    lst.append({"ts": datetime.now(timezone.utc).isoformat(), "leads": aantal})
+    hist[batch_id] = lst
+    supabase.table('config').upsert(
+        {"key": "reset_history", "value": json.dumps(hist)}).execute()
+    return aantal
+
 # --- 3b. SLIMME DIALER — READ-ONLY CACHED AGGREGATEN ---
 NL_BEREIKT = list(dialer_brein.BEREIKT_REDENEN)
 
@@ -1009,14 +1029,7 @@ with st.expander("📊 Batch Rapportage", expanded=False):
 
             if col_r.button("♻️ Reset Geen Gehoor", key=f"reset_{akb}"):
                 try:
-                    res = supabase.table('leads').update({"status": "new", "result": None}) \
-                        .eq("batch_id", akb).in_("ended_reason", GEEN_GEHOOR_REDENEN) \
-                        .or_("sip_status.neq.404,sip_status.is.null").execute()
-                    aantal = len(res.data) if res.data else 0
-                    hist.append({"ts": datetime.now(timezone.utc).isoformat(), "leads": aantal})
-                    reset_history[akb] = hist
-                    supabase.table('config').upsert(
-                        {"key": "reset_history", "value": json.dumps(reset_history)}).execute()
+                    aantal = reset_geen_gehoor(akb)
                     st.cache_data.clear()
                     st.success(f"✅ {aantal} leads in '{akb}' staan weer in de wachtrij.")
                     time.sleep(1.5); st.rerun()
