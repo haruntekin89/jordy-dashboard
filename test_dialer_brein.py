@@ -1,5 +1,5 @@
 """Console-test voor dialer_brein (run: python3 test_dialer_brein.py)."""
-from dialer_brein import is_bereikt, is_dood_nummer, is_herbelbaar, uur_gewichten
+from dialer_brein import is_bereikt, is_dood_nummer, is_herbelbaar, uur_gewichten, verwachte_curve, verwacht_tot_nu
 
 
 def test_is_bereikt():
@@ -56,6 +56,36 @@ def test_uur_gewichten_scheidt_zaterdag():
     rijen = [_rij("2026-06-24", 2, 16, 300, 9)]   # woensdag
     g = uur_gewichten(rijen, is_zaterdag=True, min_dagen=1, min_uur_calls=1)
     assert g == {}   # geen zaterdag-data => leeg
+
+
+def test_verwachte_curve_eindigt_op_dagdoel():
+    venster = list(range(9, 21))                       # 09..20
+    gewichten = {u: 1.0 for u in venster}              # plat profiel
+    curve = verwachte_curve(gewichten, venster, dagdoel=400)
+    assert round(curve[20]) == 400                     # einde dag = dagdoel
+    assert curve[9] < curve[14] < curve[20]            # monotoon stijgend
+
+
+def test_verwachte_curve_weegt_goede_uren_zwaarder():
+    venster = [9, 10]
+    gewichten = {9: 0.5, 10: 1.5}                       # uur 10 telt 3x zo zwaar
+    curve = verwachte_curve(gewichten, venster, dagdoel=400)
+    aandeel_9 = curve[9]
+    aandeel_10 = curve[10] - curve[9]
+    assert round(aandeel_10 / aandeel_9, 1) == 3.0
+
+
+def test_verwacht_tot_nu_interpoleert():
+    venster = list(range(9, 21))
+    gewichten = {u: 1.0 for u in venster}
+    curve = verwachte_curve(gewichten, venster, dagdoel=400)
+    # halverwege uur 14 = curve[13] + helft van uur 14's aandeel
+    halverwege = verwacht_tot_nu(curve, venster, 14, 30, dagdoel=400)
+    aandeel_14 = curve[14] - curve[13]
+    assert abs(halverwege - (curve[13] + aandeel_14 * 0.5)) < 0.01
+    # vóór het venster = 0, na het venster = dagdoel
+    assert verwacht_tot_nu(curve, venster, 7, 0) == 0.0
+    assert round(verwacht_tot_nu(curve, venster, 23, 0)) == 400
 
 
 if __name__ == "__main__":

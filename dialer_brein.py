@@ -63,3 +63,36 @@ def uur_gewichten(daguur_rijen, is_zaterdag=False, min_dagen=3, min_uur_calls=15
         w = rate / gem_rate
         gewichten[uur] = round(max(0.3, min(2.0, w)), 2)
     return gewichten
+
+
+def verwachte_curve(gewichten, uren_venster, dagdoel=DAGDOEL):
+    """Verdeel dagdoel over de beluren gewogen volgens het uur-profiel.
+
+    Geeft het cumulatief verwachte aantal successen aan het EINDE van elk uur.
+    """
+    w = {u: gewichten.get(u, 1.0) for u in uren_venster}
+    som = sum(w.values()) or 1.0
+    curve = {}
+    loper = 0.0
+    for u in uren_venster:
+        loper += dagdoel * (w[u] / som)
+        curve[u] = round(loper, 2)
+    return curve
+
+
+def verwacht_tot_nu(curve, uren_venster, nu_uur, nu_minuut, dagdoel=DAGDOEL):
+    """Verwacht aantal successen tot dit moment (interpoleert binnen het uur)."""
+    if not uren_venster:
+        return 0.0
+    if nu_uur < uren_venster[0]:
+        return 0.0
+    if nu_uur > uren_venster[-1]:
+        return float(dagdoel)
+    vorige = 0.0
+    for u in uren_venster:
+        eind = curve[u]
+        if u == nu_uur:
+            aandeel = eind - vorige
+            return round(vorige + aandeel * (nu_minuut / 60.0), 2)
+        vorige = eind
+    return float(dagdoel)
