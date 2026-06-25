@@ -156,3 +156,33 @@ def batch_gewichten(scores, dood_pauze_pct=0.40, klem=(0.5, 1.5)):
             out.append({"batch_id": s["batch_id"], "gewicht": round(w, 2),
                         "actie": f"{label} (conversie {s['conversie']*100:.2f}% vs gem {gem*100:.2f}%)"})
     return out
+
+
+def reset_voorstellen(reset_info, wacht_dagen=2):
+    """Bepaal per uitgebelde batch of een reset van HERBELBARE leads mag.
+
+    Reset alleen herbelbare geen-gehoor; dode nummers tellen NIET mee en blijven
+    geparkeerd. (De max-3-rondes-grens vereist een DB-kolom en zit NIET in de
+    meekijk-modus — dit zijn round-1 voorstellen.)
+    """
+    out = []
+    for r in reset_info:
+        bid = r["batch_id"]
+        if r["new_count"] > 0:
+            out.append({"batch_id": bid, "resetbaar": False,
+                        "herbelbaar_count": r["herbelbaar_count"],
+                        "reden": f"niet uitgebeld ({r['new_count']} leads nog 'new')"})
+        elif r["laatste_poging_dagen"] < wacht_dagen:
+            out.append({"batch_id": bid, "resetbaar": False,
+                        "herbelbaar_count": r["herbelbaar_count"],
+                        "reden": f"wacht nog ({r['laatste_poging_dagen']:.0f}/{wacht_dagen} dagen)"})
+        elif r["herbelbaar_count"] <= 0:
+            out.append({"batch_id": bid, "resetbaar": False,
+                        "herbelbaar_count": 0,
+                        "reden": "geen herbelbare leads (alleen dode nummers over)"})
+        else:
+            out.append({"batch_id": bid, "resetbaar": True,
+                        "herbelbaar_count": r["herbelbaar_count"],
+                        "reden": f"uitgebeld + {r['laatste_poging_dagen']:.0f} dagen geleden → "
+                                 f"{r['herbelbaar_count']} herbelbare leads terugzetbaar"})
+    return out

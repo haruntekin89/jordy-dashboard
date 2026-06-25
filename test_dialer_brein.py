@@ -1,5 +1,5 @@
 """Console-test voor dialer_brein (run: python3 test_dialer_brein.py)."""
-from dialer_brein import is_bereikt, is_dood_nummer, is_herbelbaar, uur_gewichten, verwachte_curve, verwacht_tot_nu, koers, batch_scores, batch_gewichten
+from dialer_brein import is_bereikt, is_dood_nummer, is_herbelbaar, uur_gewichten, verwachte_curve, verwacht_tot_nu, koers, batch_scores, batch_gewichten, reset_voorstellen
 
 
 def test_is_bereikt():
@@ -144,6 +144,38 @@ def test_batch_gewichten_te_weinig_data_neutraal():
     g = batch_gewichten(scores)[0]
     assert g["gewicht"] == 1.0                 # geen gok op ruis
     assert "data" in g["actie"].lower()
+
+
+def test_reset_resetbaar_na_2_dagen():
+    info = [{"batch_id": "A", "new_count": 0, "laatste_poging_dagen": 3,
+             "herbelbaar_count": 1800, "dood_count": 600}]
+    r = reset_voorstellen(info, wacht_dagen=2)[0]
+    assert r["resetbaar"] is True
+    assert r["herbelbaar_count"] == 1800
+
+
+def test_reset_nog_te_vers():
+    info = [{"batch_id": "A", "new_count": 0, "laatste_poging_dagen": 1,
+             "herbelbaar_count": 1800, "dood_count": 600}]
+    r = reset_voorstellen(info, wacht_dagen=2)[0]
+    assert r["resetbaar"] is False
+    assert "2 dagen" in r["reden"]
+
+
+def test_reset_niet_uitgebeld():
+    info = [{"batch_id": "A", "new_count": 500, "laatste_poging_dagen": 9,
+             "herbelbaar_count": 100, "dood_count": 10}]
+    r = reset_voorstellen(info, wacht_dagen=2)[0]
+    assert r["resetbaar"] is False
+    assert "niet uitgebeld" in r["reden"].lower()
+
+
+def test_reset_alleen_dode_nummers_over():
+    info = [{"batch_id": "A", "new_count": 0, "laatste_poging_dagen": 5,
+             "herbelbaar_count": 0, "dood_count": 900}]
+    r = reset_voorstellen(info, wacht_dagen=2)[0]
+    assert r["resetbaar"] is False
+    assert "geen herbelbare" in r["reden"].lower()
 
 
 if __name__ == "__main__":
