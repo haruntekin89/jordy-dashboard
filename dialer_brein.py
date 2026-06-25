@@ -235,3 +235,22 @@ def week_verwacht(isoweekday, dag_fr, week_target=2000):
     if isoweekday >= 6:
         return float(week_target)
     return week_target * ((isoweekday - 1) + dag_fr) / 5.0
+
+
+# Duplicaat van tempo_logica.py (server) — identiek houden. Voor het TONEN van het
+# echte geregelde tempo op het dashboard (hetzelfde getal als de motor berekent).
+def week_nudge(week_succes, week_verw, week_target=2000, gevoeligheid=3.0, lo=0.6, hi=1.4):
+    """Tempo-factor o.b.v. weekstand: achter→>1, voor→<1, zacht begrensd."""
+    factor = 1.0 + gevoeligheid * (week_verw - week_succes) / week_target
+    return max(lo, min(hi, factor))
+
+
+def tempo_nu(plan, nu_uur, nudge, max_cpm, vloer=10):
+    """Calls/min voor het huidige uur: plan[uur] × nudge, geklemd [vloer, max_cpm].
+    plan-keys mogen int of string zijn (JSON-config geeft string-keys)."""
+    base = plan.get(nu_uur)
+    if base is None:
+        base = plan.get(str(nu_uur))
+    if base is None:
+        base = vloer
+    return int(max(vloer, min(max_cpm, round(base * nudge))))

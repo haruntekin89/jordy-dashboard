@@ -535,14 +535,18 @@ else:
     tempo_max = st.number_input("Max tempo (calls/min)", min_value=10, max_value=300,
                                 value=_tmax_default, step=5, key="tempo_max_input")
     tplan = dialer_brein.tempo_plan(gewichten, venster, int(tempo_max))
-    nu_cpm = tplan.get(nu_nl.hour, 10)
     wk_succes = cached_week_succes(nu_nl.strftime("%G-W%V"))
     wk_verwacht = dialer_brein.week_verwacht(
         nu_nl.isoweekday(), dialer_brein.dag_fractie(nu_nl.hour, nu_nl.minute))
+    # Echt geregeld tempo nu = plan[uur] × week-nudge (zelfde berekening als de motor).
+    _nudge_nu = dialer_brein.week_nudge(wk_succes, wk_verwacht)
+    nu_cpm = dialer_brein.tempo_nu(tplan, nu_nl.hour, _nudge_nu, int(tempo_max))
     wk_status = ("achter" if wk_succes < wk_verwacht - 25
                  else "voor" if wk_succes > wk_verwacht + 25 else "op koers")
     tc1, tc2 = st.columns(2)
-    tc1.metric("Tempo nu (plan)", f"~{nu_cpm}/min")
+    tc1.metric("Tempo nu", f"~{nu_cpm}/min",
+               help="Het tempo waar de dialer nu op stuurt (plan-uur × week-nudge). "
+                    "Dit is wat hij gebruikt zodra tempo-sturing AAN staat.")
     tc2.metric("Deze week", f"{wk_succes} / 2000", wk_status)
     _plan_uren = [u for u in venster if u in (9, 11, 13, 15, 16, 18, 20)]
     st.caption("Plan per uur (calls/min): "
@@ -728,9 +732,28 @@ with st.expander("⚙️ Besturing", expanded=True):
     SPEED_MAX = 120
     tempo_txt = (f" &nbsp;·&nbsp; <span style='color:#16a34a;font-weight:600'>"
                  f"nu echt: {echt_tempo}/min</span>") if echt_tempo is not None else ""
+    # Als tempo-sturing AAN staat: toon het GEREGELDE streeftempo (zelfde getal als de
+    # motor berekent) i.p.v. de handmatige schuif-waarde, zodat de balk de werkelijkheid toont.
+    if str(cached_config("tempo_sturing_aan", "false")).lower() == "true":
+        try:
+            _sp_plan = json.loads(cached_config("tempo_plan", "{}") or "{}")
+            _sp_max = int(cached_config("tempo_max", "120") or 120)
+            _sp_nu = datetime.now(NL_TZ or timezone.utc)
+            _sp_wk = cached_week_succes(_sp_nu.strftime("%G-W%V"))
+            _sp_verw = dialer_brein.week_verwacht(
+                _sp_nu.isoweekday(), dialer_brein.dag_fractie(_sp_nu.hour, _sp_nu.minute))
+            _sp_ger = dialer_brein.tempo_nu(
+                _sp_plan, _sp_nu.hour, dialer_brein.week_nudge(_sp_wk, _sp_verw), _sp_max)
+            streef_html = (f"<span style='color:#2563eb;font-weight:600'>🤖 geregeld: "
+                           f"~{_sp_ger} calls/min (tempo-sturing aan)</span>")
+        except Exception:
+            streef_html = (f"<span style='color:#6b7280;font-weight:500'>"
+                           f"streef: {current_speed} calls/min</span>")
+    else:
+        streef_html = (f"<span style='color:#6b7280;font-weight:500'>"
+                       f"streef: {current_speed} calls/min</span>")
     st.markdown(
-        f"##### ⚡ Snelheid &nbsp;·&nbsp; <span style='color:#6b7280;font-weight:500'>"
-        f"streef: {current_speed} calls/min</span>{tempo_txt}", unsafe_allow_html=True)
+        f"##### ⚡ Snelheid &nbsp;·&nbsp; {streef_html}{tempo_txt}", unsafe_allow_html=True)
     new_speed = st.slider("snelheid", min_value=10, max_value=SPEED_MAX,
                           value=min(current_speed, SPEED_MAX), step=5, label_visibility="collapsed",
                           help="Streeftempo in calls/min. CM kan 5/sec (300/min); de echte grens "
