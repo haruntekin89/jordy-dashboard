@@ -732,8 +732,9 @@ with st.expander("⚙️ Besturing", expanded=True):
     SPEED_MAX = 120
     tempo_txt = (f" &nbsp;·&nbsp; <span style='color:#16a34a;font-weight:600'>"
                  f"nu echt: {echt_tempo}/min</span>") if echt_tempo is not None else ""
-    # Als tempo-sturing AAN staat: toon het GEREGELDE streeftempo (zelfde getal als de
-    # motor berekent) i.p.v. de handmatige schuif-waarde, zodat de balk de werkelijkheid toont.
+    # Als tempo-sturing AAN staat: bereken het GEREGELDE tempo (zelfde getal als de motor),
+    # zet de schuif daar fysiek op + op slot, en sla de handmatige waarde NIET over.
+    _speed_geregeld = None
     if str(cached_config("tempo_sturing_aan", "false")).lower() == "true":
         try:
             _sp_plan = json.loads(cached_config("tempo_plan", "{}") or "{}")
@@ -742,25 +743,28 @@ with st.expander("⚙️ Besturing", expanded=True):
             _sp_wk = cached_week_succes(_sp_nu.strftime("%G-W%V"))
             _sp_verw = dialer_brein.week_verwacht(
                 _sp_nu.isoweekday(), dialer_brein.dag_fractie(_sp_nu.hour, _sp_nu.minute))
-            _sp_ger = dialer_brein.tempo_nu(
+            _speed_geregeld = dialer_brein.tempo_nu(
                 _sp_plan, _sp_nu.hour, dialer_brein.week_nudge(_sp_wk, _sp_verw), _sp_max)
-            streef_html = (f"<span style='color:#2563eb;font-weight:600'>🤖 geregeld: "
-                           f"~{_sp_ger} calls/min (tempo-sturing aan)</span>")
         except Exception:
-            streef_html = (f"<span style='color:#6b7280;font-weight:500'>"
-                           f"streef: {current_speed} calls/min</span>")
+            _speed_geregeld = None
+    if _speed_geregeld is not None:
+        streef_html = (f"<span style='color:#2563eb;font-weight:600'>🤖 geregeld: "
+                       f"~{_speed_geregeld} calls/min (tempo-sturing aan)</span>")
+        _slider_val = max(10, min(SPEED_MAX, int(round(_speed_geregeld / 5.0)) * 5))
     else:
         streef_html = (f"<span style='color:#6b7280;font-weight:500'>"
                        f"streef: {current_speed} calls/min</span>")
+        _slider_val = min(current_speed, SPEED_MAX)
     st.markdown(
         f"##### ⚡ Snelheid &nbsp;·&nbsp; {streef_html}{tempo_txt}", unsafe_allow_html=True)
     new_speed = st.slider("snelheid", min_value=10, max_value=SPEED_MAX,
-                          value=min(current_speed, SPEED_MAX), step=5, label_visibility="collapsed",
-                          help="Streeftempo in calls/min. CM kan 5/sec (300/min); de echte grens "
-                               "is Cartesia (15 stemmen) + de 25-cap, dus ~60-80 is zinvol. "
-                               "Hoger leunt vaker op het TTS-vangnet.")
+                          value=_slider_val, step=5, label_visibility="collapsed",
+                          disabled=(_speed_geregeld is not None),
+                          help="Streeftempo in calls/min. Zolang tempo-sturing AAN staat regelt "
+                               "de dialer dit zelf en staat de schuif op slot — zet tempo-sturing "
+                               "uit om weer handmatig te sturen.")
 
-    if new_speed != current_speed:
+    if _speed_geregeld is None and new_speed != current_speed:
         supabase.table('config').upsert({"key": "speed", "value": str(new_speed)}).execute()
         st.cache_data.clear()
         st.success(f"Streeftempo aangepast naar {new_speed} calls/minuut!")
