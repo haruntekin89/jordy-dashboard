@@ -658,8 +658,9 @@ else:
     st.caption("⚠️ Meekijk-modus: round-1 reset-voorstellen; max-3-rondes en uur-mix-correctie "
                "volgen pas in de actieve fase (vereisen DB-kolommen). Niets hiervan wordt uitgevoerd.")
   except Exception as _meekijk_err:
-    st.error(f"De meekijk-modus kon niet laden ({type(_meekijk_err).__name__}). "
-             "De rest van je dashboard werkt gewoon — probeer het zo nog eens.")
+    st.error(f"De meekijk-modus kon niet laden ({type(_meekijk_err).__name__}: {_meekijk_err}). "
+             "De rest van je dashboard werkt gewoon. Tip: klik rechtsboven op het menu → "
+             "'Reboot app' om de nieuwste code te laden.")
 
 st.divider()
 
