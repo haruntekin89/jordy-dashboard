@@ -1,5 +1,5 @@
 """Console-test voor dialer_brein (run: python3 test_dialer_brein.py)."""
-from dialer_brein import is_bereikt, is_dood_nummer, is_herbelbaar, uur_gewichten, verwachte_curve, verwacht_tot_nu
+from dialer_brein import is_bereikt, is_dood_nummer, is_herbelbaar, uur_gewichten, verwachte_curve, verwacht_tot_nu, koers
 
 
 def test_is_bereikt():
@@ -86,6 +86,31 @@ def test_verwacht_tot_nu_interpoleert():
     # vóór het venster = 0, na het venster = dagdoel
     assert verwacht_tot_nu(curve, venster, 7, 0) == 0.0
     assert round(verwacht_tot_nu(curve, venster, 23, 0)) == 400
+
+
+def test_koers_doel_binnen():
+    k = koers(succes_nu=405, verwacht_nu=380, dagdoel=400)
+    assert k["status"] == "doel binnen"
+    assert k["tempo"] == "laag pitje"
+
+
+def test_koers_achter():
+    k = koers(succes_nu=300, verwacht_nu=340, dagdoel=400)
+    assert k["status"] == "achter"
+    assert k["tempo"] == "omhoog"
+    assert k["verschil"] == -40
+
+
+def test_koers_voor():
+    k = koers(succes_nu=360, verwacht_nu=330, dagdoel=400)
+    assert k["status"] == "voor"
+    assert k["tempo"] == "omlaag"
+
+
+def test_koers_op_koers():
+    k = koers(succes_nu=331, verwacht_nu=330, dagdoel=400)   # binnen marge
+    assert k["status"] == "op koers"
+    assert k["tempo"] == "gelijk"
 
 
 if __name__ == "__main__":

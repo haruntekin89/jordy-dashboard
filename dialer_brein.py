@@ -96,3 +96,22 @@ def verwacht_tot_nu(curve, uren_venster, nu_uur, nu_minuut, dagdoel=DAGDOEL):
             return round(vorige + aandeel * (nu_minuut / 60.0), 2)
         vorige = eind
     return float(dagdoel)
+
+
+def koers(succes_nu, verwacht_nu, dagdoel=DAGDOEL, marge=5):
+    """Vergelijk waar we zijn met de curve en geef een tempo-advies.
+
+    marge = speling (successen) waarbinnen we 'op koers' heten → geen jojo.
+    """
+    verschil = round(succes_nu - verwacht_nu, 2)
+    if succes_nu >= dagdoel:
+        return {"status": "doel binnen", "tempo": "laag pitje", "verschil": verschil,
+                "tekst": f"Doel {dagdoel} binnen ({succes_nu}) → laag pitje."}
+    if verschil <= -marge:
+        return {"status": "achter", "tempo": "omhoog", "verschil": verschil,
+                "tekst": f"{abs(verschil):.0f} achter op de curve → tempo omhoog."}
+    if verschil >= marge:
+        return {"status": "voor", "tempo": "omlaag", "verschil": verschil,
+                "tekst": f"{verschil:.0f} voor op de curve → tempo omlaag."}
+    return {"status": "op koers", "tempo": "gelijk", "verschil": verschil,
+            "tekst": "Op koers → tempo gelijk houden."}
