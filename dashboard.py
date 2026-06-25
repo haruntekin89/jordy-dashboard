@@ -523,9 +523,8 @@ else:
     st.caption("🟢 **AAN** — de dialer belt nu volgens deze gewichten."
                if _sturing_aan else
                "⚪ **UIT** — dit is alleen een voorstel; de dialer doet er niets mee.")
-    sc1, sc2 = st.columns(2)
     if not _sturing_aan:
-        if sc1.button("▶️ Pas batch-sturing toe", key="sturing_aan_btn"):
+        if st.button("▶️ Pas batch-sturing toe", key="sturing_aan_btn"):
             snap = {g["batch_id"]: g["gewicht"] for g in gewichten_b}
             supabase.table("config").upsert({"key": "batch_gewichten", "value": json.dumps(snap)}).execute()
             supabase.table("config").upsert({"key": "batch_sturing_aan", "value": "true"}).execute()
@@ -533,6 +532,7 @@ else:
             st.success("Batch-sturing staat AAN — de dialer gebruikt nu deze gewichten.")
             time.sleep(1.2); st.rerun()
     else:
+        sc1, sc2 = st.columns(2)
         if sc1.button("⏹️ Zet uit (terug naar normaal)", key="sturing_uit_btn"):
             supabase.table("config").upsert({"key": "batch_sturing_aan", "value": "false"}).execute()
             st.cache_data.clear()
