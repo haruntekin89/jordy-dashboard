@@ -1313,3 +1313,85 @@ with st.expander(f"📞 Uitbel-nummers (caller-ID) — {actief_aantal} actief", 
         st.cache_data.clear()
         st.success(f"Opgeslagen! De motor gebruikt nu {len(new_id_list)} nummers.")
         time.sleep(1); st.rerun()
+
+# --- SLIMME DIALER (MEEKIJK-MODUS, read-only) ---
+st.markdown("## 🧠 Slimme dialer — meekijk-modus")
+st.caption("Wat de slimme dialer ZOU doen. Hij voert nog niets uit — jij kijkt mee.")
+
+with st.spinner("Slimme dialer rekent mee…"):
+    nu_nl = datetime.now(NL_TZ or timezone.utc)
+    is_za = nu_nl.weekday() == 5
+    venster = list(range(10, 16)) if is_za else list(range(9, 21))
+    van14 = (nu_nl - timedelta(days=14)).date().isoformat()
+
+    daguur = cached_daguur_rijen(van14)
+    voortgang = cached_dag_voortgang(nu_nl.date().isoformat())
+    paused = cached_config("paused_batches", []) or []
+    paused_json = json.dumps(sorted(paused))
+    batch_aggr = cached_batch_aggregaten(van14, paused_json)
+    reset_info = cached_reset_info(paused_json)
+    belbaar = cached_belbare_totaal(paused_json)
+
+    gewichten = dialer_brein.uur_gewichten(daguur, is_zaterdag=is_za)
+    curve = dialer_brein.verwachte_curve(gewichten, venster)
+    verwacht = dialer_brein.verwacht_tot_nu(curve, venster, nu_nl.hour, nu_nl.minute)
+    k = dialer_brein.koers(voortgang["succes_nu"], verwacht)
+
+    scores = dialer_brein.batch_scores(batch_aggr)
+    gewichten_b = dialer_brein.batch_gewichten(scores)
+    resets = dialer_brein.reset_voorstellen(reset_info)
+
+    bereikt_nu = voortgang["bereikt_nu"] or 1
+    recente_conv = voortgang["succes_nu"] / bereikt_nu
+    tot_succes = sum(b["succes"] for b in batch_aggr)
+    tot_bereikt = sum(b["bereikt"] for b in batch_aggr) or 1
+    baseline_conv = tot_succes / tot_bereikt
+    banners = dialer_brein.banner_checks(
+        voortgang["succes_nu"], belbaar, baseline_conv, recente_conv, baseline_conv)
+
+# Banners bovenaan
+for b in banners:
+    st.warning(f"📥 **Laad nieuwe data bij** — {b['tekst']}")
+
+# Koers
+c1, c2, c3 = st.columns(3)
+c1.metric("Successen nu", voortgang["succes_nu"], f"doel {dialer_brein.DAGDOEL}")
+c2.metric("Verwacht nu (curve)", f"{verwacht:.0f}", k["status"])
+c3.metric("Tempo-advies", k["tempo"])
+st.info(f"📊 {k['tekst']}")
+
+# Curve-grafiek
+df_curve = pd.DataFrame({"uur": venster,
+                         "verwacht": [curve[u] for u in venster]})
+st.line_chart(df_curve, x="uur", y="verwacht", height=200)
+
+# Batch-sturing
+st.markdown("### Batch-sturing (voorstel)")
+if gewichten_b:
+    df_b = pd.DataFrame(gewichten_b)
+    st.dataframe(df_b, hide_index=True, use_container_width=True)
+else:
+    st.caption("Nog geen batch-data.")
+
+# Reset-voorstellen
+st.markdown("### Reset-voorstellen")
+resetbaar = [r for r in resets if r["resetbaar"]]
+if resetbaar:
+    for r in resetbaar:
+        st.success(f"♻️ Batch **{r['batch_id']}**: {r['reden']}")
+else:
+    st.caption("Geen batch klaar voor reset.")
+with st.expander("Alle batches (waarom wel/niet)"):
+    st.dataframe(pd.DataFrame(resets), hide_index=True, use_container_width=True)
+
+# Uur-profiel
+with st.expander("Geleerd uur-profiel (gewicht per uur)"):
+    if gewichten:
+        st.bar_chart(pd.DataFrame({"uur": list(gewichten.keys()),
+                                   "gewicht": list(gewichten.values())}),
+                     x="uur", y="gewicht", height=200)
+    else:
+        st.caption("Te weinig data → plat profiel (alle uren gelijk).")
+
+st.caption("⚠️ Meekijk-modus: round-1 reset-voorstellen; max-3-rondes en uur-mix-correctie "
+           "volgen pas in de actieve fase (vereisen DB-kolommen). Niets hiervan wordt uitgevoerd.")
