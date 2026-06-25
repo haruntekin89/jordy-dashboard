@@ -684,7 +684,7 @@ with st.expander("📊 Batch Rapportage", expanded=False):
     # --- Periodekiezer (werkt op de hele tabel) ---
     periode = st.selectbox(
         "Periode",
-        ["Vandaag", "Laatste 7 dagen", "Laatste 30 dagen", "Hele looptijd"],
+        ["Vandaag", "Laatste 7 dagen", "Laatste 30 dagen", "Hele looptijd", "Zelf datum kiezen"],
         index=3,
         key="batch_periode",
     )
@@ -694,6 +694,11 @@ with st.expander("📊 Batch Rapportage", expanded=False):
         van_d, tot_d = vandaag_d - pd.Timedelta(days=6), vandaag_d
     elif periode == "Laatste 30 dagen":
         van_d, tot_d = vandaag_d - pd.Timedelta(days=29), vandaag_d
+    elif periode == "Zelf datum kiezen":
+        col_van, col_tot = st.columns(2)
+        van_d = col_van.date_input("Van", value=vandaag_d - pd.Timedelta(days=6),
+                                   key="batch_van")
+        tot_d = col_tot.date_input("Tot", value=vandaag_d, key="batch_tot")
     else:  # Hele looptijd
         van_d, tot_d = date(2020, 1, 1), vandaag_d
     if isinstance(van_d, pd.Timestamp): van_d = van_d.date()
