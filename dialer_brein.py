@@ -186,3 +186,23 @@ def reset_voorstellen(reset_info, wacht_dagen=2):
                         "reden": f"uitgebeld + {r['laatste_poging_dagen']:.0f} dagen geleden → "
                                  f"{r['herbelbaar_count']} herbelbare leads terugzetbaar"})
     return out
+
+
+def banner_checks(succes_nu, belbare_leads, verwachte_conversie,
+                  recente_conversie, baseline_conversie, dagdoel=DAGDOEL,
+                  daling_factor=0.7):
+    """Bepaal of de 'laad nieuwe data bij'-banner aan moet. Read-only signalen."""
+    waarschuwingen = []
+    max_haalbaar = succes_nu + belbare_leads * verwachte_conversie
+    if max_haalbaar < dagdoel:
+        waarschuwingen.append({
+            "type": "te weinig verse leads",
+            "tekst": f"Met de huidige leads is ~{max_haalbaar:.0f} haalbaar "
+                     f"(doel {dagdoel}). Laad nieuwe data bij."})
+    if baseline_conversie > 0 and recente_conversie < baseline_conversie * daling_factor:
+        waarschuwingen.append({
+            "type": "conversie zakt",
+            "tekst": f"Conversie zakt: recent {recente_conversie*100:.2f}% vs "
+                     f"normaal {baseline_conversie*100:.2f}%. Leads raken op/moe — "
+                     f"laad nieuwe data bij."})
+    return waarschuwingen

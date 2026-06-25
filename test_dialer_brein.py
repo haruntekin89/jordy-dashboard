@@ -1,5 +1,5 @@
 """Console-test voor dialer_brein (run: python3 test_dialer_brein.py)."""
-from dialer_brein import is_bereikt, is_dood_nummer, is_herbelbaar, uur_gewichten, verwachte_curve, verwacht_tot_nu, koers, batch_scores, batch_gewichten, reset_voorstellen
+from dialer_brein import is_bereikt, is_dood_nummer, is_herbelbaar, uur_gewichten, verwachte_curve, verwacht_tot_nu, koers, batch_scores, batch_gewichten, reset_voorstellen, banner_checks
 
 
 def test_is_bereikt():
@@ -176,6 +176,34 @@ def test_reset_alleen_dode_nummers_over():
     r = reset_voorstellen(info, wacht_dagen=2)[0]
     assert r["resetbaar"] is False
     assert "geen herbelbare" in r["reden"].lower()
+
+
+def test_banner_te_weinig_leads():
+    # 200 binnen + 1000 belbaar * 1% = 210 < 400 => waarschuwing
+    w = banner_checks(succes_nu=200, belbare_leads=1000, verwachte_conversie=0.01,
+                      recente_conversie=0.01, baseline_conversie=0.01, dagdoel=400)
+    typen = [x["type"] for x in w]
+    assert "te weinig verse leads" in typen
+
+
+def test_banner_genoeg_leads_geen_waarschuwing():
+    # 200 + 50000*1% = 700 >= 400 => geen leads-waarschuwing
+    w = banner_checks(succes_nu=200, belbare_leads=50000, verwachte_conversie=0.01,
+                      recente_conversie=0.01, baseline_conversie=0.01, dagdoel=400)
+    assert all(x["type"] != "te weinig verse leads" for x in w)
+
+
+def test_banner_conversie_zakt():
+    # recente 0.4% < 0.7 * baseline 1.0% => waarschuwing
+    w = banner_checks(succes_nu=200, belbare_leads=50000, verwachte_conversie=0.01,
+                      recente_conversie=0.004, baseline_conversie=0.01, dagdoel=400)
+    assert any(x["type"] == "conversie zakt" for x in w)
+
+
+def test_banner_stil_als_alles_goed():
+    w = banner_checks(succes_nu=380, belbare_leads=50000, verwachte_conversie=0.01,
+                      recente_conversie=0.011, baseline_conversie=0.01, dagdoel=400)
+    assert w == []
 
 
 if __name__ == "__main__":
