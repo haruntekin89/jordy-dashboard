@@ -1326,7 +1326,8 @@ with st.spinner("Slimme dialer rekent mee…"):
 
     daguur = cached_daguur_rijen(van14)
     voortgang = cached_dag_voortgang(nu_nl.date().isoformat())
-    paused = cached_config("paused_batches", []) or []
+    _paused_raw = cached_config("paused_batches", "[]")
+    paused = _paused_raw if isinstance(_paused_raw, list) else json.loads(_paused_raw or "[]")
     paused_json = json.dumps(sorted(paused))
     batch_aggr = cached_batch_aggregaten(van14, paused_json)
     reset_info = cached_reset_info(paused_json)
