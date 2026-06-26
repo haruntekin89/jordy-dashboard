@@ -1,5 +1,5 @@
 """Console-test voor dialer_brein (run: python3 test_dialer_brein.py)."""
-from dialer_brein import is_bereikt, is_dood_nummer, is_herbelbaar, uur_gewichten, verwachte_curve, verwacht_tot_nu, koers, batch_scores, batch_gewichten, reset_voorstellen, banner_checks, tempo_plan, dag_fractie as db_dag_fractie, week_verwacht as db_week_verwacht
+from dialer_brein import is_bereikt, is_dood_nummer, is_herbelbaar, uur_gewichten, verwachte_curve, verwacht_tot_nu, koers, batch_scores, batch_gewichten, reset_voorstellen, banner_checks, tempo_plan, dag_fractie as db_dag_fractie, week_verwacht as db_week_verwacht, belvenster as db_belvenster, bereik_meten as db_bereik_meten, tempo_behoefte as db_tempo_behoefte, bereken_tempo as db_bereken_tempo
 
 
 def test_is_bereikt():
@@ -223,6 +223,24 @@ def test_db_dag_fractie_en_week_verwacht():
     assert db_dag_fractie(15, 0) == 0.5
     assert db_week_verwacht(3, 0.5) == 1000.0
     assert db_week_verwacht(6, 0.0) == 2000.0
+
+
+def test_db_belvenster_en_bereik():
+    assert db_belvenster(1) == (9, 21)
+    assert db_belvenster(6) == (10, 16)
+    assert db_belvenster(7) is None
+    assert db_bereik_meten(5, 100) == 0.05
+    assert db_bereik_meten(1, 0) == 0.0
+
+
+def test_db_tempo_behoefte_en_bereken():
+    assert db_tempo_behoefte(0, 0.05, 1.0, 4.0, 60, 120) == 10        # klaar → vloer
+    assert db_tempo_behoefte(200, 0.01, 1.0, 4.0, 60, 120) == 83
+    g = {13: 2.0, 14: 1.0, 15: 1.0, 16: 1.0, 17: 1.0, 18: 1.0, 19: 1.0, 20: 1.0}
+    # genoeg calls, achter, laag bereik → max
+    assert db_bereken_tempo(g, 1, 13, 0, 50, 200, 2, 120) == 120
+    # doel gehaald → vloer
+    assert db_bereken_tempo(g, 1, 13, 0, 400, 200, 10, 120) == 10
 
 
 if __name__ == "__main__":
