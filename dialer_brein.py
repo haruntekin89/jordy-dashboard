@@ -6,6 +6,7 @@ ze VOEREN NIETS UIT (read-only meekijk-modus).
 """
 
 DAGDOEL = 400
+VLOER = 10  # laagste calls/min bij tempo-sturing
 BEREIKT_REDENEN = {"klant-ended-call", "assistant-ended-call"}
 
 
@@ -254,3 +255,78 @@ def tempo_nu(plan, nu_uur, nudge, max_cpm, vloer=10):
     if base is None:
         base = vloer
     return int(max(vloer, min(max_cpm, round(base * nudge))))
+
+
+# Tempo-model functies (identiek aan server tempo_logica.py)
+def belvenster(isoweekday):
+    """(start_uur, eind_uur) van het belvenster vandaag; eind exclusief. Zo → None."""
+    if isoweekday == 7:
+        return None
+    if isoweekday == 6:
+        return (10, 16)
+    return (9, 21)
+
+
+def _gewicht(uur_gewichten, uur):
+    """Gewicht voor een uur; accepteert int- of string-keys; default 1.0."""
+    g = uur_gewichten.get(uur)
+    if g is None:
+        g = uur_gewichten.get(str(uur))
+    if g is None:
+        return 1.0
+    try:
+        return float(g)
+    except (TypeError, ValueError):
+        return 1.0
+
+
+def bereik_meten(succ_90, calls_90):
+    """Successen per gebelde lead over de meetperiode; geen calls → 0.0."""
+    if calls_90 <= 0:
+        return 0.0
+    return succ_90 / calls_90
+
+
+def resterend_gewicht(uur_gewichten, nu_uur, eind_uur):
+    """(gewicht van dit uur, som van de gewichten van nu t/m laatste beluur)."""
+    gewicht_nu = _gewicht(uur_gewichten, nu_uur)
+    som = sum(_gewicht(uur_gewichten, u) for u in range(nu_uur, eind_uur))
+    return gewicht_nu, som
+
+
+def tempo_behoefte(nog_nodig, bereik, gewicht_nu, som_rest, resterende_min, max_cpm, vloer=VLOER):
+    """Calls/min nu = (nog_nodig / bereik) × (dit uur z'n deel) / resterende minuten."""
+    if nog_nodig <= 0 or bereik <= 0 or som_rest <= 0 or resterende_min <= 0:
+        return vloer
+    calls_totaal = nog_nodig / bereik
+    calls_dit_uur = calls_totaal * (gewicht_nu / som_rest)
+    cpm = calls_dit_uur / resterende_min
+    return int(max(vloer, min(max_cpm, round(cpm))))
+
+
+def uur_profiel_tempo(uur_gewichten, nu_uur, venster_uren, max_cpm, vloer=VLOER):
+    """Terugval-tempo: beste uur ≈ max_cpm, zwak ≈ vloer (lineair op gewicht)."""
+    if not venster_uren:
+        return vloer
+    max_g = max(_gewicht(uur_gewichten, u) for u in venster_uren) or 1.0
+    cpm = vloer + (max_cpm - vloer) * (_gewicht(uur_gewichten, nu_uur) / max_g)
+    return int(max(vloer, min(max_cpm, round(cpm))))
+
+
+def bereken_tempo(uur_gewichten, isoweekday, nu_uur, nu_minuut, succ_vandaag,
+                  calls_90, succ_90, max_cpm, dagdoel=DAGDOEL, vloer=VLOER, drempel=30):
+    """Het volledige tempo-model: dag-target + gemeten bereik, terugval bij weinig data."""
+    venster = belvenster(isoweekday)
+    if venster is None:
+        return vloer
+    start, eind = venster
+    if nu_uur < start or nu_uur >= eind:
+        return vloer
+    venster_uren = list(range(start, eind))
+    if calls_90 < drempel:
+        return uur_profiel_tempo(uur_gewichten, nu_uur, venster_uren, max_cpm, vloer)
+    bereik = bereik_meten(succ_90, calls_90)
+    nog_nodig = max(0, dagdoel - succ_vandaag)
+    gewicht_nu, som_rest = resterend_gewicht(uur_gewichten, nu_uur, eind)
+    return tempo_behoefte(nog_nodig, bereik, gewicht_nu, som_rest,
+                          60 - nu_minuut, max_cpm, vloer)
