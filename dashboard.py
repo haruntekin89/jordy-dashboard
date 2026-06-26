@@ -412,16 +412,6 @@ def cached_belbare_totaal(paused_json):
         q = q.not_.in_("batch_id", paused)
     return q.execute().count or 0
 
-@st.cache_data(ttl=120, show_spinner=False)
-def cached_week_succes(week_iso):
-    """Alle SUCCES deze week (ma 00:00 NL → nu), op ended_at."""
-    nu_nl = datetime.now(NL_TZ or timezone.utc)
-    maandag = (nu_nl - timedelta(days=nu_nl.isoweekday() - 1)).replace(
-        hour=0, minute=0, second=0, microsecond=0)
-    s_iso = maandag.astimezone(timezone.utc).isoformat()
-    return supabase.table("leads").select("id", count="exact", head=True) \
-        .eq("result", "SUCCES").gte("ended_at", s_iso).execute().count or 0
-
 @st.cache_data(ttl=300, show_spinner=False)
 def cached_bereik_90(stamp):
     """Outbound calls + successen van de laatste 90 min (first_attempt, naïef UTC)."""
