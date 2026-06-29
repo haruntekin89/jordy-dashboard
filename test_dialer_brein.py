@@ -206,6 +206,23 @@ def test_banner_stil_als_alles_goed():
     assert w == []
 
 
+def test_banner_conversie_zakt_te_weinig_steekproef():
+    # recente conversie zakt, MAAR het 90-min-venster heeft te weinig bereikte mensen
+    # (5 < drempel 30) => geen 'conversie zakt'-banner (anders flikkert hij op ruis).
+    w = banner_checks(succes_nu=200, belbare_leads=50000, verwachte_conversie=0.01,
+                      recente_conversie=0.004, baseline_conversie=0.01, dagdoel=400,
+                      recente_steekproef=5)
+    assert all(x["type"] != "conversie zakt" for x in w)
+
+
+def test_banner_conversie_zakt_genoeg_steekproef():
+    # zelfde daling maar met genoeg bereikte mensen (50 >= 30) => wel de banner.
+    w = banner_checks(succes_nu=200, belbare_leads=50000, verwachte_conversie=0.01,
+                      recente_conversie=0.004, baseline_conversie=0.01, dagdoel=400,
+                      recente_steekproef=50)
+    assert any(x["type"] == "conversie zakt" for x in w)
+
+
 def test_tempo_plan_vorm():
     # uur 16 (gewicht 2) is best → max; uur 19 (gewicht 0.5) laag
     g = {9: 1.0, 16: 2.0, 19: 0.5}

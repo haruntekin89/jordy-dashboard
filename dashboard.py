@@ -421,7 +421,10 @@ def cached_bereik_90(stamp):
     succ = supabase.table("leads").select("id", count="exact", head=True) \
         .eq("direction", "outbound").eq("result", "SUCCES") \
         .gte("first_attempt", s_90).execute().count or 0
-    return {"calls_90": calls, "succ_90": succ}
+    bereikt = supabase.table("leads").select("id", count="exact", head=True) \
+        .eq("direction", "outbound").in_("ended_reason", NL_BEREIKT) \
+        .gte("first_attempt", s_90).execute().count or 0
+    return {"calls_90": calls, "succ_90": succ, "bereikt_90": bereikt}
 
 # --- 4. STATUS CONTROLEREN ---
 current_status = cached_config("status", "UIT")
@@ -501,18 +504,21 @@ else:
         verwacht = dialer_brein.verwacht_tot_nu(curve, venster, nu_nl.hour, nu_nl.minute)
         k = dialer_brein.koers(voortgang["succes_nu"], verwacht)
 
-        scores = dialer_brein.batch_scores(batch_aggr)
-        gewichten_b = dialer_brein.batch_gewichten(scores)
         resets = dialer_brein.reset_voorstellen(reset_info)
 
-        bereikt_nu = voortgang["bereikt_nu"] or 1
-        # Conversie outbound-only houden (anders vertekent inbound-succes de banner).
-        recente_conv = voortgang["succes_outbound_nu"] / bereikt_nu
         tot_succes = sum(b["succes"] for b in batch_aggr)
         tot_bereikt = sum(b["bereikt"] for b in batch_aggr) or 1
         baseline_conv = tot_succes / tot_bereikt
+        # 'Recent' = voortschrijdend 90-min-venster (outbound, conversie per bereikt
+        # mens) i.p.v. de hele-dag-conversie. De dag-conversie blijft de slechte
+        # ochtend meeslepen, waardoor de banner ook na bijladen aan bleef staan; het
+        # 90-min-venster herstelt zodra verse leads converteren. Steekproef (bereikt_90)
+        # gaat mee zodat de check niet op ruis afgaat bij weinig calls.
+        _b90_ban = cached_bereik_90(nu_nl.strftime("%Y%m%d%H") + str(nu_nl.minute // 5))
+        recente_conv = _b90_ban["succ_90"] / (_b90_ban["bereikt_90"] or 1)
         banners = dialer_brein.banner_checks(
-            voortgang["succes_nu"], belbaar, baseline_conv, recente_conv, baseline_conv)
+            voortgang["succes_nu"], belbaar, baseline_conv, recente_conv, baseline_conv,
+            recente_steekproef=_b90_ban["bereikt_90"])
 
     # Banners bovenaan
     for b in banners:

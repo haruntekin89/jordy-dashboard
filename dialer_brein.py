@@ -191,8 +191,13 @@ def reset_voorstellen(reset_info, wacht_dagen=2):
 
 def banner_checks(succes_nu, belbare_leads, verwachte_conversie,
                   recente_conversie, baseline_conversie, dagdoel=DAGDOEL,
-                  daling_factor=0.7):
-    """Bepaal of de 'laad nieuwe data bij'-banner aan moet. Read-only signalen."""
+                  daling_factor=0.7, recente_steekproef=None, min_steekproef=30):
+    """Bepaal of de 'laad nieuwe data bij'-banner aan moet. Read-only signalen.
+
+    recente_steekproef = aantal bereikte mensen waarop recente_conversie berust
+    (bv. in het 90-min-venster). Is die te klein (< min_steekproef) dan is de
+    conversie te ruisgevoelig en slaan we de 'conversie zakt'-check over.
+    None = check altijd uitvoeren (backward-compatible)."""
     waarschuwingen = []
     max_haalbaar = succes_nu + belbare_leads * verwachte_conversie
     if max_haalbaar < dagdoel:
@@ -200,7 +205,9 @@ def banner_checks(succes_nu, belbare_leads, verwachte_conversie,
             "type": "te weinig verse leads",
             "tekst": f"Met de huidige leads is ~{max_haalbaar:.0f} haalbaar "
                      f"(doel {dagdoel}). Laad nieuwe data bij."})
-    if baseline_conversie > 0 and recente_conversie < baseline_conversie * daling_factor:
+    genoeg_steekproef = recente_steekproef is None or recente_steekproef >= min_steekproef
+    if (genoeg_steekproef and baseline_conversie > 0
+            and recente_conversie < baseline_conversie * daling_factor):
         waarschuwingen.append({
             "type": "conversie zakt",
             "tekst": f"Conversie zakt: recent {recente_conversie*100:.2f}% vs "
