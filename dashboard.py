@@ -588,39 +588,41 @@ else:
                              "verwacht": [curve[u] for u in venster]})
     st.line_chart(df_curve, x="uur", y="verwacht", height=200)
 
-    # Batch-sturing
-    st.markdown("### Batch-sturing (voorstel)")
-    if gewichten_b:
-        df_b = pd.DataFrame(gewichten_b)
+    # Batch-sturing (de motor rekent zelf; hier alleen tonen + aan/uit)
+    st.markdown("### Batch-sturing")
+    _bg_raw = cached_config("batch_gewichten", "{}")
+    try:
+        _bg = _bg_raw if isinstance(_bg_raw, dict) else json.loads(_bg_raw or "{}")
+    except (ValueError, TypeError):
+        _bg = {}
+    if _bg:
+        df_b = pd.DataFrame(
+            [{"batch_id": k,
+              "gewicht": v,
+              "stand": ("pauze (veel dode nummers)" if v == 0 else
+                        "neutraal (nieuw / te weinig data)" if v == 1.0 else
+                        "meer" if v > 1.0 else "minder")}
+             for k, v in sorted(_bg.items(), key=lambda x: -x[1])])
         st.dataframe(df_b, hide_index=True, use_container_width=True)
     else:
-        st.caption("Nog geen batch-data.")
+        st.caption("Nog geen gewichten — de motor vult deze zelf zodra batch-sturing AAN staat.")
 
-    # Aan/uit: batch-sturing echt toepassen (snapshot van de gewichten naar config).
     _sturing_aan = str(cached_config("batch_sturing_aan", "false")).lower() == "true"
-    st.caption("🟢 **AAN** — de dialer belt nu volgens deze gewichten."
+    st.caption("🟢 **AAN** — de motor stuurt automatisch (nieuwe batches doen meteen mee, "
+               "na genoeg data wordt er op conversie bijgestuurd)."
                if _sturing_aan else
-               "⚪ **UIT** — dit is alleen een voorstel; de dialer doet er niets mee.")
+               "⚪ **UIT** — normale werkwijze (gelijk-willekeurig over alle actieve batches).")
     if not _sturing_aan:
-        if st.button("▶️ Pas batch-sturing toe", key="sturing_aan_btn"):
-            snap = {g["batch_id"]: g["gewicht"] for g in gewichten_b}
-            supabase.table("config").upsert({"key": "batch_gewichten", "value": json.dumps(snap)}).execute()
+        if st.button("▶️ Zet batch-sturing AAN", key="sturing_aan_btn"):
             supabase.table("config").upsert({"key": "batch_sturing_aan", "value": "true"}).execute()
             st.cache_data.clear()
-            st.success("Batch-sturing staat AAN — de dialer gebruikt nu deze gewichten.")
+            st.success("Batch-sturing AAN — de motor regelt nu de gewichten zelf.")
             time.sleep(1.2); st.rerun()
     else:
-        sc1, sc2 = st.columns(2)
-        if sc1.button("⏹️ Zet uit (terug naar normaal)", key="sturing_uit_btn"):
+        if st.button("⏹️ Zet uit (terug naar normaal)", key="sturing_uit_btn"):
             supabase.table("config").upsert({"key": "batch_sturing_aan", "value": "false"}).execute()
             st.cache_data.clear()
-            st.success("Batch-sturing staat UIT — terug naar de normale werkwijze.")
-            time.sleep(1.2); st.rerun()
-        if sc2.button("🔄 Ververs gewichten", key="sturing_ververs_btn"):
-            snap = {g["batch_id"]: g["gewicht"] for g in gewichten_b}
-            supabase.table("config").upsert({"key": "batch_gewichten", "value": json.dumps(snap)}).execute()
-            st.cache_data.clear()
-            st.success("Gewichten ververst met de huidige stand.")
+            st.success("Batch-sturing UIT — terug naar de normale werkwijze.")
             time.sleep(1.2); st.rerun()
 
     # Reset-voorstellen
