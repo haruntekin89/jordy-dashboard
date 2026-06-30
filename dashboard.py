@@ -512,7 +512,18 @@ else:
         reset_info = cached_reset_info(paused_json)
         belbaar = cached_belbare_totaal(paused_json)
 
-        gewichten = dialer_brein.uur_gewichten(daguur, is_zaterdag=is_za)
+        # Zelfde uur-profiel als de motor: de motor stuurt op config.uur_gewichten,
+        # dus toont het dashboard dat ook (i.p.v. een eigen live-berekend profiel).
+        # Val terug op het live-berekende profiel zolang de config nog leeg is.
+        _ug_raw = cached_config("uur_gewichten", "{}")
+        try:
+            gewichten = _ug_raw if isinstance(_ug_raw, dict) else json.loads(_ug_raw or "{}")
+            if not isinstance(gewichten, dict):
+                gewichten = {}
+        except (ValueError, TypeError):
+            gewichten = {}
+        if not gewichten:
+            gewichten = dialer_brein.uur_gewichten(daguur, is_zaterdag=is_za)
         curve = dialer_brein.verwachte_curve(gewichten, venster)
         verwacht = dialer_brein.verwacht_tot_nu(curve, venster, nu_nl.hour, nu_nl.minute)
         k = dialer_brein.koers(voortgang["succes_nu"], verwacht)
