@@ -1,5 +1,5 @@
 """Console-test voor dialer_brein (run: python3 test_dialer_brein.py)."""
-from dialer_brein import is_bereikt, is_dood_nummer, is_herbelbaar, uur_gewichten, verwachte_curve, verwacht_tot_nu, koers, batch_scores, batch_gewichten, reset_voorstellen, banner_checks, tempo_plan, dag_fractie as db_dag_fractie, week_verwacht as db_week_verwacht, belvenster as db_belvenster, bereik_meten as db_bereik_meten, tempo_behoefte as db_tempo_behoefte, bereken_tempo as db_bereken_tempo
+from dialer_brein import is_bereikt, is_dood_nummer, is_herbelbaar, uur_gewichten, verwachte_curve, verwacht_tot_nu, koers, batch_scores, batch_gewichten, reset_voorstellen, banner_checks, tempo_plan, dag_fractie as db_dag_fractie, week_verwacht as db_week_verwacht, belvenster as db_belvenster, bereik_meten as db_bereik_meten, tempo_behoefte as db_tempo_behoefte, bereken_tempo as db_bereken_tempo, verwachte_curve as db_verwachte_curve, uur_profiel_tempo as db_uur_profiel_tempo, curve_dit_uur as db_curve_dit_uur, tempo_curve as db_tempo_curve
 
 
 def test_is_bereikt():
@@ -254,10 +254,75 @@ def test_db_tempo_behoefte_en_bereken():
     assert db_tempo_behoefte(0, 0.05, 1.0, 4.0, 60, 120) == 10        # klaar → vloer
     assert db_tempo_behoefte(200, 0.01, 1.0, 4.0, 60, 120) == 83
     g = {13: 2.0, 14: 1.0, 15: 1.0, 16: 1.0, 17: 1.0, 18: 1.0, 19: 1.0, 20: 1.0}
-    # genoeg calls, achter, laag bereik → max
-    assert db_bereken_tempo(g, 1, 13, 0, 50, 200, 2, 120) == 120
+    # relatie-asserts: achter op schema → meer tempo dan voor op schema
+    t_achter = db_bereken_tempo(g, 1, 13, 0, 50, 200, 2, 120)
+    t_voor   = db_bereken_tempo(g, 1, 13, 0, 200, 200, 2, 120)
+    assert t_voor < t_achter              # achter → meer tempo dan voor
+    assert 10 <= t_achter <= 120          # in bounds
     # doel gehaald → vloer
     assert db_bereken_tempo(g, 1, 13, 0, 400, 200, 10, 120) == 10
+
+
+def test_tempo_curve_helper():
+    # cdu 33,3 successen dit uur, op schema (gat 0), bereik 1% → 33,3/0,01/60 ≈ 55-56/min
+    # (floating-point: 33.3/0.01 = 3329.9999... → 55.499.../60 → rondt naar 55)
+    base = db_tempo_curve(33.3, 0.0, 8, 0.01, 100)
+    assert base in (55, 56)
+    # achter (gat +) → hoger dan op schema
+    assert db_tempo_curve(33.3, 80.0, 8, 0.01, 100) > 56
+    # voor (gat -) → lager dan op schema
+    assert db_tempo_curve(33.3, -80.0, 8, 0.01, 100) < 56
+    # bereik 0 → vloer
+    assert db_tempo_curve(33.3, 0.0, 8, 0.0, 100) == 10
+    # heel ver voor (doel dit uur <= 0) → vloer
+    assert db_tempo_curve(10.0, -1000.0, 8, 0.01, 100) == 10
+    # geen uren meer → vloer
+    assert db_tempo_curve(33.3, 0.0, 0, 0.01, 100) == 10
+
+
+def test_curve_dit_uur():
+    venster = list(range(9, 21))
+    curve = db_verwachte_curve({}, venster)   # vlak profiel → 400/12 per uur
+    # eerste uur: stap vanaf 0
+    assert abs(db_curve_dit_uur(curve, venster, 9) - (400 / 12)) < 0.1
+    # later uur: stap tussen twee curve-punten, ook ≈ 400/12 bij vlak profiel
+    assert abs(db_curve_dit_uur(curve, venster, 15) - (400 / 12)) < 0.1
+
+
+def test_bereken_tempo_volgt_koers():
+    g = {u: 1.0 for u in range(9, 21)}        # vlak profiel; op 13:00 hoort ≈133 binnen
+    # genoeg data, bereik 1%
+    op_schema = db_bereken_tempo(g, 1, 13, 0, succ_vandaag=133, calls_90=1000, succ_90=10, max_cpm=100)
+    voor      = db_bereken_tempo(g, 1, 13, 0, succ_vandaag=180, calls_90=1000, succ_90=10, max_cpm=100)
+    achter    = db_bereken_tempo(g, 1, 13, 0, succ_vandaag=80,  calls_90=1000, succ_90=10, max_cpm=100)
+    assert voor < op_schema < achter
+    for t in (op_schema, voor, achter):
+        assert 10 <= t <= 100
+
+
+def test_bereken_tempo_geen_zaagtand():
+    g = {u: 1.0 for u in range(9, 21)}
+    vroeg = db_bereken_tempo(g, 1, 13, 5,  succ_vandaag=133, calls_90=1000, succ_90=10, max_cpm=100)
+    laat  = db_bereken_tempo(g, 1, 13, 55, succ_vandaag=133, calls_90=1000, succ_90=10, max_cpm=100)
+    # binnen het uur mag het tempo maar zacht oplopen, niet naar de max springen
+    assert laat - vroeg <= 15
+    assert laat < 100
+
+
+def test_bereken_tempo_randen():
+    g = {u: 1.0 for u in range(9, 21)}
+    # < 30 calls → terugval op uur-profiel
+    assert db_bereken_tempo(g, 1, 13, 0, 50, 10, 1, 100) == \
+        db_uur_profiel_tempo(g, 13, list(range(9, 21)), 100)
+    # bereik 0 (geen successen) → terugval op uur-profiel
+    assert db_bereken_tempo(g, 1, 13, 0, 50, 1000, 0, 100) == \
+        db_uur_profiel_tempo(g, 13, list(range(9, 21)), 100)
+    # doel binnen → vloer
+    assert db_bereken_tempo(g, 1, 13, 0, 400, 1000, 10, 100) == 10
+    # zondag → vloer
+    assert db_bereken_tempo(g, 7, 13, 0, 50, 1000, 10, 100) == 10
+    # vóór venster → vloer
+    assert db_bereken_tempo(g, 1, 7, 0, 50, 1000, 10, 100) == 10
 
 
 if __name__ == "__main__":

@@ -320,9 +320,30 @@ def uur_profiel_tempo(uur_gewichten, nu_uur, venster_uren, max_cpm, vloer=VLOER)
     return int(max(vloer, min(max_cpm, round(cpm))))
 
 
+def curve_dit_uur(curve, venster_uren, nu_uur):
+    """Successen die het schema aan DIT uur toekent (de curve-stap van dit uur)."""
+    idx = venster_uren.index(nu_uur)
+    vorig = curve[venster_uren[idx - 1]] if idx > 0 else 0.0
+    return curve[nu_uur] - vorig
+
+
+def tempo_curve(cdu, gat, resterende_uren, bereik, max_cpm, vloer=VLOER):
+    """Curve-volgend tempo: basis (cdu/bereik) + zachte inhaal van het gat.
+    cdu = curve-successen dit uur; gat>0 = achter, gat<0 = voor. Geklemd [vloer, max]."""
+    if bereik <= 0 or resterende_uren <= 0:
+        return vloer
+    inhaal = gat / resterende_uren
+    doel_dit_uur = cdu + inhaal
+    if doel_dit_uur <= 0:
+        return vloer
+    cpm = (doel_dit_uur / bereik) / 60.0
+    return int(max(vloer, min(max_cpm, round(cpm))))
+
+
 def bereken_tempo(uur_gewichten, isoweekday, nu_uur, nu_minuut, succ_vandaag,
                   calls_90, succ_90, max_cpm, dagdoel=DAGDOEL, vloer=VLOER, drempel=30):
-    """Het volledige tempo-model: dag-target + gemeten bereik, terugval bij weinig data."""
+    """Curve-volgend tempo: volg het schema naar het dagdoel (voor → omlaag,
+    achter → omhoog). Terugval op het uur-profiel bij te weinig data."""
     venster = belvenster(isoweekday)
     if venster is None:
         return vloer
@@ -333,7 +354,13 @@ def bereken_tempo(uur_gewichten, isoweekday, nu_uur, nu_minuut, succ_vandaag,
     if calls_90 < drempel:
         return uur_profiel_tempo(uur_gewichten, nu_uur, venster_uren, max_cpm, vloer)
     bereik = bereik_meten(succ_90, calls_90)
-    nog_nodig = max(0, dagdoel - succ_vandaag)
-    gewicht_nu, som_rest = resterend_gewicht(uur_gewichten, nu_uur, eind)
-    return tempo_behoefte(nog_nodig, bereik, gewicht_nu, som_rest,
-                          60 - nu_minuut, max_cpm, vloer)
+    if bereik <= 0:
+        return uur_profiel_tempo(uur_gewichten, nu_uur, venster_uren, max_cpm, vloer)
+    if succ_vandaag >= dagdoel:
+        return vloer
+    curve = verwachte_curve(uur_gewichten, venster_uren, dagdoel)
+    verwacht_nu = verwacht_tot_nu(curve, venster_uren, nu_uur, nu_minuut, dagdoel)
+    cdu = curve_dit_uur(curve, venster_uren, nu_uur)
+    gat = verwacht_nu - succ_vandaag
+    resterende_uren = eind - nu_uur
+    return tempo_curve(cdu, gat, resterende_uren, bereik, max_cpm, vloer)
