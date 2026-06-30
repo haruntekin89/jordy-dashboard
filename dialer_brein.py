@@ -71,7 +71,7 @@ def verwachte_curve(gewichten, uren_venster, dagdoel=DAGDOEL):
 
     Geeft het cumulatief verwachte aantal successen aan het EINDE van elk uur.
     """
-    w = {u: gewichten.get(u, 1.0) for u in uren_venster}
+    w = {u: _gewicht(gewichten, u) for u in uren_venster}  # _gewicht: robuust voor int- én string-keys
     som = sum(w.values()) or 1.0
     curve = {}
     loper = 0.0
