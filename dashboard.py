@@ -241,28 +241,40 @@ def cached_batches_overzicht(van_iso, tot_iso):
     }).execute()
     return res.data or []
 
+def _nl_dag_utc_range(vandaag_iso):
+    """UTC-iso [start, eind) van de Nederlandse kalenderdag voor 'vandaag_iso'
+    (YYYY-MM-DD). Zo telt elke 'Vandaag'-teller dezelfde NL-dag i.p.v. een UTC-dag
+    (die ~2u verschoven is) — gelijk aan cached_dag_voortgang."""
+    d = date.fromisoformat(vandaag_iso)
+    start_nl = datetime(d.year, d.month, d.day, 0, 0, tzinfo=NL_TZ or timezone.utc)
+    s_iso = start_nl.astimezone(timezone.utc).isoformat()
+    e_iso = (start_nl + timedelta(days=1)).astimezone(timezone.utc).isoformat()
+    return s_iso, e_iso
+
+
 @st.cache_data(ttl=15, show_spinner=False)
 def cached_kpi_counts(vandaag, paused_json="[]"):
     # Uitbel-tellers: sluit inkomende (terugbel) gesprekken uit.
+    s_iso, e_iso = _nl_dag_utc_range(vandaag)
     succes = supabase.table('leads').select("*", count='exact', head=True) \
         .eq('result', 'SUCCES').neq('direction', 'inbound') \
-        .gte('ended_at', f"{vandaag} 00:00:00").lte('ended_at', f"{vandaag} 23:59:59").execute().count
+        .gte('ended_at', s_iso).lt('ended_at', e_iso).execute().count
     fail_total = supabase.table('leads').select("*", count='exact', head=True) \
         .eq('result', 'MISLUKT').neq('direction', 'inbound') \
-        .gte('ended_at', f"{vandaag} 00:00:00").lte('ended_at', f"{vandaag} 23:59:59").execute().count
+        .gte('ended_at', s_iso).lt('ended_at', e_iso).execute().count
     # Foutief nummer = SIP 404 (onbestaand/niet-routeerbaar). Apart van "mislukt".
     foutief = supabase.table('leads').select("*", count='exact', head=True) \
         .eq('result', 'MISLUKT').eq('sip_status', '404').neq('direction', 'inbound') \
-        .gte('ended_at', f"{vandaag} 00:00:00").lte('ended_at', f"{vandaag} 23:59:59").execute().count
+        .gte('ended_at', s_iso).lt('ended_at', e_iso).execute().count
     # Geen gehoor = niemand nam echt op (did-not-answer / voicemail / stille lijn /
     # geen-mens). Géén gevoerd gesprek → hoort NIET bij "mislukt". 404 zit hier in
     # en wordt eruit gehaald, zodat "geen gehoor" alleen GELDIGE nummers telt.
     geen_gehoor_total = supabase.table('leads').select("*", count='exact', head=True) \
         .eq('result', 'MISLUKT').in_('ended_reason', GEEN_GEHOOR_REDENEN).neq('direction', 'inbound') \
-        .gte('ended_at', f"{vandaag} 00:00:00").lte('ended_at', f"{vandaag} 23:59:59").execute().count
+        .gte('ended_at', s_iso).lt('ended_at', e_iso).execute().count
     geen_gehoor_404 = supabase.table('leads').select("*", count='exact', head=True) \
         .eq('result', 'MISLUKT').in_('ended_reason', GEEN_GEHOOR_REDENEN).eq('sip_status', '404').neq('direction', 'inbound') \
-        .gte('ended_at', f"{vandaag} 00:00:00").lte('ended_at', f"{vandaag} 23:59:59").execute().count
+        .gte('ended_at', s_iso).lt('ended_at', e_iso).execute().count
     geen_gehoor = max((geen_gehoor_total or 0) - (geen_gehoor_404 or 0), 0)  # geen gehoor van GELDIGE nummers
     # Échte mislukte gesprekken = totaal MISLUKT − foutieve nummers − geen gehoor.
     fail = max((fail_total or 0) - (foutief or 0) - geen_gehoor, 0)
@@ -289,12 +301,13 @@ def cached_kpi_counts(vandaag, paused_json="[]"):
 @st.cache_data(ttl=15, show_spinner=False)
 def cached_inbound_counts(vandaag):
     # Inkomende (terugbel) gesprekken van vandaag, gesplitst in succes/mislukt.
+    s_iso, e_iso = _nl_dag_utc_range(vandaag)
     succes = supabase.table('leads').select("*", count='exact', head=True) \
         .eq('direction', 'inbound').eq('result', 'SUCCES') \
-        .gte('ended_at', f"{vandaag} 00:00:00").lte('ended_at', f"{vandaag} 23:59:59").execute().count
+        .gte('ended_at', s_iso).lt('ended_at', e_iso).execute().count
     fail = supabase.table('leads').select("*", count='exact', head=True) \
         .eq('direction', 'inbound').eq('result', 'MISLUKT') \
-        .gte('ended_at', f"{vandaag} 00:00:00").lte('ended_at', f"{vandaag} 23:59:59").execute().count
+        .gte('ended_at', s_iso).lt('ended_at', e_iso).execute().count
     return succes, fail
 
 @st.cache_data(ttl=30, show_spinner=False)
@@ -682,7 +695,8 @@ else:
 st.divider()
 
 # --- 5. KPI TELLERS (VANDAAG) ---
-vandaag = date.today().isoformat()
+# NL-datum (niet date.today(): de server kan op UTC staan → rond middernacht mis).
+vandaag = datetime.now(NL_TZ or timezone.utc).date().isoformat()
 paused_json = cached_config("paused_batches", "[]") or "[]"
 try:
     count_succes, count_fail, count_geen_gehoor, count_foutief, todo_mobiel, todo_vast = cached_kpi_counts(vandaag, paused_json)
