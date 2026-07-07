@@ -1521,12 +1521,12 @@ with st.expander("📥 Export Succesvolle Leads", expanded=False):
         except Exception as e:
             st.error(f"Fout: {e}")
 
-# --- TELEFOONNUMMERS (4 VAKJES) ---
+# --- TELEFOONNUMMERS (10 VAKJES) ---
 try:
     raw_ids = cached_config("phone_ids")
-    saved_list = json.loads(raw_ids) if raw_ids else ["", "", "", ""]
+    saved_list = json.loads(raw_ids) if raw_ids else []
 except Exception:
-    saved_list = ["", "", "", ""]
+    saved_list = []
 
 try:
     raw_labels = cached_config("phone_labels")
@@ -1534,7 +1534,7 @@ try:
 except Exception:
     labels_map = {}
 
-while len(saved_list) < 4: saved_list.append("")
+while len(saved_list) < 10: saved_list.append("")
 actief_aantal = sum(1 for x in saved_list if x.strip())
 
 with st.expander(f"📞 Uitbel-nummers (caller-ID) — {actief_aantal} actief", expanded=False):
@@ -1544,7 +1544,7 @@ with st.expander(f"📞 Uitbel-nummers (caller-ID) — {actief_aantal} actief", 
 
     nieuwe_labels = []
     nieuwe_ids = []
-    for i in range(4):
+    for i in range(10):
         col_lbl, col_id = st.columns([1, 2])
         huidige_id = saved_list[i]
         huidig_label = labels_map.get(huidige_id, "") if huidige_id else ""
