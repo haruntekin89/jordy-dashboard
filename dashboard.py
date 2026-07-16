@@ -320,11 +320,19 @@ def cached_config(key, default=None):
 
 def reset_geen_gehoor(batch_id):
     """Zet herbelbare geen-gehoor leads van een batch terug op 'new' (404 uitgesloten).
+    Max 3 belpogingen per nummer: alleen leads met reset_count < 2 gaan terug, en
+    hun teller loopt +1 (0->1->2). Op 2 (al 3x gebeld) blijven ze staan.
     Werkt config.reset_history bij. Geeft het aantal teruggezette leads terug."""
-    res = supabase.table('leads').update({"status": "new", "result": None}) \
-        .eq("batch_id", batch_id).in_("ended_reason", GEEN_GEHOOR_REDENEN) \
-        .or_("sip_status.neq.404,sip_status.is.null").execute()
-    aantal = len(res.data) if res.data else 0
+    aantal = 0
+    # Hoog eerst (1->2), dan laag (0->1): anders zou de zojuist naar 1 gezette
+    # groep in dezelfde run nog eens naar 2 springen (dubbel tellen).
+    for huidige, nieuwe in ((1, 2), (0, 1)):
+        res = supabase.table('leads').update(
+                {"status": "new", "result": None, "reset_count": nieuwe}) \
+            .eq("batch_id", batch_id).eq("reset_count", huidige) \
+            .in_("ended_reason", GEEN_GEHOOR_REDENEN) \
+            .or_("sip_status.neq.404,sip_status.is.null").execute()
+        aantal += len(res.data) if res.data else 0
     try:
         hist = json.loads(cached_config("reset_history", "{}") or "{}")
         if not isinstance(hist, dict):
@@ -411,9 +419,15 @@ def cached_reset_info(paused_json):
             dagen = (nu - lt).total_seconds() / 86400.0
         else:
             dagen = 999.0
+        # Alleen nummers die nog GEEN 3 pogingen hebben (reset_count < 2) tellen als
+        # herbelbaar — spiegelt exact wat reset_geen_gehoor daadwerkelijk terugzet.
+        herbelbaar = supabase.table("leads").select("id", count="exact", head=True) \
+            .eq("batch_id", r["batch_id"]).in_("ended_reason", GEEN_GEHOOR_REDENEN) \
+            .lt("reset_count", 2).or_("sip_status.neq.404,sip_status.is.null") \
+            .execute().count or 0
         out.append({"batch_id": r["batch_id"], "new_count": r.get("new_count") or 0,
                     "laatste_poging_dagen": round(dagen, 1),
-                    "herbelbaar_count": r.get("herbelbaar") or 0,
+                    "herbelbaar_count": herbelbaar,
                     "dood_count": r.get("dood_count") or 0})
     return out
 

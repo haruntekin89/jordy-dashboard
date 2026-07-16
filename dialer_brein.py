@@ -163,8 +163,9 @@ def reset_voorstellen(reset_info, wacht_dagen=2):
     """Bepaal per uitgebelde batch of een reset van HERBELBARE leads mag.
 
     Reset alleen herbelbare geen-gehoor; dode nummers tellen NIET mee en blijven
-    geparkeerd. (De max-3-rondes-grens vereist een DB-kolom en zit NIET in de
-    meekijk-modus — dit zijn round-1 voorstellen.)
+    geparkeerd. De max-3-belpogingen-grens per nummer wordt UPSTREAM afgedwongen:
+    herbelbaar_count telt alleen leads met reset_count < 2, dus een batch die op is
+    (alles 3x gebeld) valt vanzelf uit de voorstellen ("geen herbelbare leads").
     """
     out = []
     for r in reset_info:
@@ -180,7 +181,7 @@ def reset_voorstellen(reset_info, wacht_dagen=2):
         elif r["herbelbaar_count"] <= 0:
             out.append({"batch_id": bid, "resetbaar": False,
                         "herbelbaar_count": 0,
-                        "reden": "geen herbelbare leads (alleen dode nummers over)"})
+                        "reden": "geen herbelbare leads (dood of al 3x gebeld)"})
         else:
             out.append({"batch_id": bid, "resetbaar": True,
                         "herbelbaar_count": r["herbelbaar_count"],
