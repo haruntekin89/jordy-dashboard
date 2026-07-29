@@ -675,10 +675,70 @@ Zet die twee plus `+31600000001` in een CSV met kolommen `telefoon,naam`.
 Verwacht: 1 toegevoegd (het verzonnen nummer), 1 sale, 1 nog open.
 De wachtrij-teller op het dashboard stijgt met 1.
 
-- [ ] **Step 4: Importeer hetzelfde bestand nogmaals met "Laatste 3 maanden"**
+- [ ] **Step 3b: Controleer de voorwaarde op `leads.id` (blokkerend)**
 
-Verwacht: 0 toegevoegd, want het verzonnen nummer staat nu zelf in de wachtrij
-en valt onder "nog open". Dit bewijst dat regel 3 werkt.
+Harun draait in de Supabase SQL Editor:
+
+```sql
+select is_identity, identity_generation, column_default
+from information_schema.columns
+where table_name = 'leads' and column_name = 'id';
+```
+
+Veilig bij `identity_generation = 'BY DEFAULT'` of leeg met een `nextval`-default.
+Staat er `ALWAYS`, dan mislukt élk hergebruik en moet Task 6 anders (bijvoorbeeld
+een gewone `update()` per groep zonder `id` in de payload). **Niet verder testen
+voordat dit bekend is.**
+
+- [ ] **Step 4: Test de HERGEBRUIK-route — dit is de belangrijke test**
+
+De oorspronkelijke versie van deze stap (hetzelfde bestand nog eens importeren)
+kon nooit iets vinden: bij de tweede import blokkeert regel 3 ("nog open") vóórdat
+de code aan het wegschrijven toekomt. Precies daardoor bleef de botsing met de
+unieke index onopgemerkt tot de eindreview. Deze stap moet de weg-schrijf-route
+écht raken.
+
+Zoek een nummer dat lang geleden voor het laatst gebeld is en niets bijzonders
+heeft (geen sale, afgerond, geen 404):
+
+```bash
+ssh -i ~/.ssh/leaseweb_jordy -o IdentitiesOnly=yes root@5.79.88.41 \
+  "cd /root/livekit-agent && ./venv/bin/python -c \"
+from dotenv import load_dotenv; load_dotenv('/root/livekit-agent/.env')
+import os
+from supabase import create_client
+s=create_client(os.getenv('SUPABASE_URL'),os.getenv('SUPABASE_KEY'))
+d=s.table('leads').select('id,phone,batch_id,status,result,first_attempt') \
+   .eq('status','finished').eq('direction','outbound').neq('result','SUCCES') \
+   .lt('first_attempt','2026-03-01').limit(3).execute().data
+for r in d: print(r)
+\""
+```
+
+Zet één zo'n nummer in een CSV en importeer met **"Laatste 6 maanden"**.
+
+Verwacht in de pop-up: **0 nieuw toegevoegd, 1 opnieuw belbaar**, 0 mislukt.
+
+Controleer daarna in de database dat er GEEN tweede rij bij is gekomen en dat de
+bestaande rij is bijgewerkt — dit is de kern van wat Task 6 repareert:
+
+```bash
+ssh -i ~/.ssh/leaseweb_jordy -o IdentitiesOnly=yes root@5.79.88.41 \
+  "cd /root/livekit-agent && ./venv/bin/python -c \"
+from dotenv import load_dotenv; load_dotenv('/root/livekit-agent/.env')
+import os
+from supabase import create_client
+s=create_client(os.getenv('SUPABASE_URL'),os.getenv('SUPABASE_KEY'))
+TEL='+31XXXXXXXXX'   # het nummer dat je net importeerde
+d=s.table('leads').select('id,phone,direction,batch_id,status,result,first_attempt') \
+   .eq('phone',TEL).execute().data
+print('aantal rijen voor dit nummer:', len(d))
+for r in d: print(' ', r)
+\""
+```
+
+Verwacht: **één** uitgaande rij (niet twee), met `status='new'`, `result=None`,
+de nieuwe `batch_id`, en `first_attempt` nog op de oude waarde.
 
 - [ ] **Step 5: Ruim de testleads op**
 
