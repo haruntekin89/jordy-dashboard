@@ -222,7 +222,11 @@ def bestaande_lead_info(phones, chunk_size=200):
     die worden hier samengevat tot één oordeel, waarbij één blokkerende rij
     genoeg is.
 
-    Geeft: {phone: {'sale': bool, 'open': bool, 'laatste_contact': datetime|None}}
+    Geeft: {phone: {'sale': bool, 'open': bool, 'laatste_contact': datetime|None,
+                    'outbound_id': int|None}}
+    outbound_id = de primaire sleutel van de uitgaande rij van dit nummer, als die
+    bestaat. Nodig omdat er maar ÉÉN uitgaande rij per nummer mag bestaan: bij
+    opnieuw importeren wordt die rij bijgewerkt in plaats van een tweede toegevoegd.
     Nummers die niet in leads staan ontbreken in de dict.
     """
     if not phones:
@@ -231,12 +235,19 @@ def bestaande_lead_info(phones, chunk_size=200):
     gevonden = {}
     for i in range(0, len(unique), chunk_size):
         res = supabase.table('leads') \
-            .select('phone,status,result,first_attempt,ended_at') \
+            .select('id,phone,direction,status,result,first_attempt,ended_at') \
             .in_('phone', unique[i:i + chunk_size]).execute()
         for rij in (res.data or []):
             tel = rij['phone']
             huidig = gevonden.setdefault(
-                tel, {"sale": False, "open": False, "laatste_contact": None})
+                tel, {"sale": False, "open": False, "laatste_contact": None,
+                      "outbound_id": None})
+            # Er kan er maar één zijn (unieke index op phone voor outbound), maar
+            # bij twijfel houden we de laagste aan zodat het bepaald blijft.
+            if rij.get('direction') == 'outbound':
+                bestaand = huidig["outbound_id"]
+                if bestaand is None or rij['id'] < bestaand:
+                    huidig["outbound_id"] = rij['id']
             if rij.get('result') == 'SUCCES':
                 huidig["sale"] = True
             if rij.get('status') != 'finished':
@@ -1289,9 +1300,12 @@ def toon_import_resultaat(r):
     if r.get("soort") == "leads":
         st.markdown(f"**Batch:** `{r['batch_id']}`")
         st.caption(f"Ontdubbeld tegen: **{r.get('periode', 'Hele database')}**")
-        a, b = st.columns(2)
+        a, b, i = st.columns(3)
         a.metric("📄 Regels in bestand", r["totaal"])
-        b.metric("🆕 Toegevoegd aan wachtrij", r["toegevoegd"])
+        b.metric("🆕 Nieuw toegevoegd", r["toegevoegd"],
+                 help="Nummers die nog niet in het systeem stonden.")
+        i.metric("♻️ Opnieuw belbaar", r["heractief"],
+                 help="Nummers die er al stonden en nu weer in de wachtrij zijn gezet.")
         c, d, e = st.columns(3)
         c.metric("🔄 Recent contact", r["recent_contact"],
                  help="Al eerder gebeld of teruggebeld binnen de gekozen periode.")
@@ -1306,12 +1320,13 @@ def toon_import_resultaat(r):
         if r["mislukt"]:
             st.error(f"{r['mislukt']} leads konden NIET worden opgeslagen "
                      "(databasefout — zie logs).")
-        elif r["toegevoegd"] == 0:
+        elif r["toegevoegd"] + r["heractief"] == 0:
             st.warning("Er is **niets** aan de wachtrij toegevoegd. Alle nummers "
                        "waren al in het systeem, op de blacklist, of ongeldig. "
                        "Daarom steeg de wachtrij niet.")
         else:
-            st.success(f"{r['toegevoegd']} nieuwe leads staan nu in de wachtrij.")
+            st.success(f"{r['toegevoegd'] + r['heractief']} leads staan nu in de wachtrij "
+                       f"({r['toegevoegd']} nieuw, {r['heractief']} opnieuw belbaar).")
         if r["recent_contact"] and r.get("periode") != "Hele database":
             st.info(f"💡 {r['recent_contact']} nummers vielen af op 'recent contact'. "
                     "Met een kortere periode zouden er meer doorkomen.")
@@ -1378,7 +1393,8 @@ with st.expander("📂 Leads & Blacklist Importeren", expanded=False):
                     blacklist_numbers = existing_phones('blacklist', geldige)
                     grens = periode_grens(PERIODE_KEUZES[periode_keuze])
 
-                    to_upload = []
+                    to_upload = []   # nummers die nog geen uitgaande rij hebben
+                    to_update = []   # bestaande uitgaande rijen die weer belbaar worden
                     tellers = {"nieuw": 0, "blacklist": 0, "sale": 0,
                                "nog_open": 0, "recent_contact": 0}
                     c_inv = 0
@@ -1393,21 +1409,32 @@ with st.expander("📂 Leads & Blacklist Importeren", expanded=False):
                             tellers[oordeel] += 1
                             if oordeel == "nieuw":
                                 clean_naam = str(row[name_col]) if name_col and name_col != "Kies..." else "Klant"
-                                to_upload.append({
+                                bestaand = (lead_info.get(clean) or {}).get("outbound_id")
+                                velden = {
                                     "phone": clean,
                                     "name": clean_naam,
                                     "status": "new",
                                     "batch_id": batch_id,
                                     "original_data": row.to_dict()
-                                })
+                                }
+                                if bestaand is None:
+                                    to_upload.append(velden)
+                                else:
+                                    # Er mag maar één uitgaande rij per nummer bestaan,
+                                    # dus die bestaande rij wordt weer belbaar gemaakt.
+                                    # De belgeschiedenis blijft staan: een volgende
+                                    # import moet nog kunnen zien wanneer we belden.
+                                    to_update.append({**velden, "id": bestaand,
+                                                      "result": None})
                                 # Zelfde nummer verderop in het bestand telt als
                                 # 'nog open', want het staat nu in de wachtrij.
                                 lead_info[clean] = {"sale": False, "open": True,
-                                                    "laatste_contact": None}
+                                                    "laatste_contact": None,
+                                                    "outbound_id": bestaand}
 
                         if i % 100 == 0: progress.progress(min(i / len(df), 1.0))
 
-                    fouten = 0
+                    fouten_nieuw = 0
                     if to_upload:
                         # Gewone insert: dubbele nummers zijn hierboven al
                         # weggefilterd. upsert(on_conflict='phone') werkt niet
@@ -1418,15 +1445,33 @@ with st.expander("📂 Leads & Blacklist Importeren", expanded=False):
                             try:
                                 supabase.table('leads').insert(chunk).execute()
                             except Exception as e:
-                                fouten += len(chunk)
-                                print(f"Batch fout: {e}")
+                                fouten_nieuw += len(chunk)
+                                print(f"Batch fout (insert): {e}")
+
+                    fouten_heractief = 0
+                    if to_update:
+                        # Bijwerken op de primaire sleutel: één verzoek per 1000
+                        # rijen, en tóch per rij een eigen naam en original_data.
+                        # on_conflict='phone' kan hier niet — die constraint is
+                        # partieel (alleen outbound) en geeft Error 42P10.
+                        for i in range(0, len(to_update), 1000):
+                            chunk = to_update[i:i+1000]
+                            try:
+                                supabase.table('leads').upsert(
+                                    chunk, on_conflict='id').execute()
+                            except Exception as e:
+                                fouten_heractief += len(chunk)
+                                print(f"Batch fout (heractief): {e}")
+
+                    fouten = fouten_nieuw + fouten_heractief
 
                     st.session_state["import_resultaat"] = {
                         "soort": "leads",
                         "batch_id": batch_id,
                         "totaal": len(df),
                         "periode": periode_keuze,
-                        "toegevoegd": tellers["nieuw"] - fouten,
+                        "toegevoegd": len(to_upload) - fouten_nieuw,
+                        "heractief": len(to_update) - fouten_heractief,
                         "recent_contact": tellers["recent_contact"],
                         "sale": tellers["sale"],
                         "blacklist": tellers["blacklist"],
