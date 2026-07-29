@@ -12,6 +12,8 @@ from dateutil.relativedelta import relativedelta
 # Labels voor de radio in het importscherm -> aantal maanden (None = hele database).
 PERIODE_KEUZES = {
     "Hele database": None,
+    "Laatste 1 maand": 1,
+    "Laatste 2 maanden": 2,
     "Laatste 3 maanden": 3,
     "Laatste 6 maanden": 6,
     "Laatste 12 maanden": 12,

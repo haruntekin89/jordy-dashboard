@@ -51,9 +51,15 @@ def test_periode_grens_rekent_maanden_terug():
     assert periode_grens(3, nu=NU) == datetime(2026, 4, 29, 12, 0, 0)
 
 
-def test_periode_keuzes_bevat_de_vier_opties():
+def test_periode_grens_rekent_een_maand_terug():
+    assert periode_grens(1, nu=NU) == datetime(2026, 6, 29, 12, 0, 0)
+
+
+def test_periode_keuzes_bevat_alle_opties():
     assert PERIODE_KEUZES == {
         "Hele database": None,
+        "Laatste 1 maand": 1,
+        "Laatste 2 maanden": 2,
         "Laatste 3 maanden": 3,
         "Laatste 6 maanden": 6,
         "Laatste 12 maanden": 12,
