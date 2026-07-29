@@ -33,6 +33,14 @@ def test_naief_utc_op_leeg_geeft_none(leeg):
     assert naar_naief_utc(leeg) is None
 
 
+def test_naief_utc_op_duidelijk_ongeldige_tekst_geeft_none():
+    assert naar_naief_utc("geen datum") is None
+
+
+def test_naief_utc_op_onmogelijke_datum_geeft_none():
+    assert naar_naief_utc("2026-13-45T99:99:99") is None
+
+
 # --- periode_grens ---
 
 def test_periode_grens_none_betekent_hele_database():

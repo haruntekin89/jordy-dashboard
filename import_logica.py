@@ -24,10 +24,16 @@ def naar_naief_utc(waarde):
     Nodig omdat de twee datumkolommen verschillen: first_attempt is tekst zonder
     tijdzone (naïef UTC), ended_at is timestamptz met '+00:00'. Zo zijn ze
     onderling vergelijkbaar.
+
+    Onleesbare waarden (None, lege string, of ongeldige ISO-tekst) geven None terug.
     """
     if not waarde:
         return None
-    moment = datetime.fromisoformat(waarde)
+    try:
+        moment = datetime.fromisoformat(waarde)
+    except (ValueError, TypeError):
+        # Ongeldige ISO-tekst of onverwacht type — geen contactmoment bekend
+        return None
     if moment.tzinfo is not None:
         moment = moment.astimezone(timezone.utc).replace(tzinfo=None)
     return moment
