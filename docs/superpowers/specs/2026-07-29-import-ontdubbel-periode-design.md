@@ -102,6 +102,41 @@ De belgeschiedenis (`first_attempt`, `ended_at`, `ended_reason`, `sip_status`) b
 staan. Dat is ook nodig: een vólgende import moet nog kunnen zien wanneer het laatste
 contact was. `motor.py` overschrijft `first_attempt` zelf zodra er weer gebeld wordt.
 
+### Gevolg: batchcijfers schuiven (bewust geaccepteerd, besluit Harun 29-07)
+
+Een hergebruikte lead krijgt de **nieuwe** `batch_id`. Doorslaggevende reden: batches zijn
+per stuk aan/uit te zetten. Blijft een lead in zijn oude batch en staat die UIT, dan wordt
+hij nooit gebeld — dan importeer je 20.000 nummers en gebeurt er niets. Ook toont de
+wachtrij van de nieuwe batch nu hetzelfde aantal als het bestand, wat is wat je verwacht.
+
+Wat je daarvoor inlevert:
+- **Oude batchrapporten veranderen met terugwerkende kracht.** `batch_meekijk` groepeert op
+  de huidige `batch_id`, dus verhuizen er rijen, dan krimpen de cijfers van de oude batch
+  over een al gerapporteerde periode, en lijkt de nieuwe batch gebeld te hebben vóórdat hij
+  bestond.
+- **Een verse batch erft all-time tellers.** `herbelbaar`, `dood_count` en `laatste_poging`
+  zijn niet op de periode begrensd, dus een nieuwe batch begint met tellingen uit gesprekken
+  die er nooit in gevoerd zijn. De reset-knop kan daardoor een reset voorstellen op een
+  batch die nog nooit gebeld is.
+- **Niet aan de hand:** de automatische batch-pauze kijkt naar de laatste 14 dagen en de
+  `first_attempt` van een hergebruikte lead ligt per definitie vóór de gekozen periode, dus
+  een nieuwe batch wordt hier niet per ongeluk op gewicht 0,0 gezet.
+
+### Voorwaarde die vóór gebruik gecontroleerd moet zijn
+
+Het bijwerken stuurt een expliciete `id` mee. Dat mag alleen als `leads.id` **niet**
+`GENERATED ALWAYS AS IDENTITY` is; anders weigert Postgres elke rij (SQLSTATE 428C9) en
+mislukt élk hergebruik, terwijl nieuwe nummers wél binnenkomen — het lijkt dan half te
+werken. Controleren met:
+
+```sql
+select is_identity, identity_generation, column_default
+from information_schema.columns
+where table_name = 'leads' and column_name = 'id';
+```
+
+Veilig bij `identity_generation = 'BY DEFAULT'` of leeg met een `nextval`-default.
+
 ## Interface
 
 Een `st.radio` boven de importknop, alleen zichtbaar bij "Leads voor Dialer":
