@@ -213,6 +213,55 @@ def existing_phones(table, phones, chunk_size=200):
         found.update(row['phone'] for row in (res.data or []))
     return found
 
+def _haal_lead_rijen_zonder_afkap(phones):
+    """Haal leads-rijen op voor deze telefoonnummers, zonder stille afkap.
+
+    Supabase geeft standaard max 1000 rijen terug per verzoek (zie fetch_all).
+    Bij gemiddeld ~1,05 rij per nummer levert een chunk van 200 nummers normaal
+    ~210 rijen op, ruim onder de cap. Komt er ooit tóch precies 1000 terug, dan
+    kán dat afkap zijn: splits de telefoonlijst dan in tweeën en probeer opnieuw,
+    anders verdwijnt een uitgaande rij stilletjes en komt de dubbele-rij-botsing
+    terug die deze functie juist moet voorkomen.
+    """
+    if not phones:
+        return []
+    res = supabase.table('leads') \
+        .select('id,phone,direction,status,result,first_attempt,ended_at') \
+        .in_('phone', phones).range(0, 999).execute()
+    data = res.data or []
+    if len(data) < 1000 or len(phones) <= 1:
+        return data
+    mid = len(phones) // 2
+    return (_haal_lead_rijen_zonder_afkap(phones[:mid])
+            + _haal_lead_rijen_zonder_afkap(phones[mid:]))
+
+def _schrijf_in_stukken(rijen, schrijf, label, stuk=1000, herkansing=50):
+    """Schrijf rijen weg in groepen van `stuk`; bij een fout die groep opnieuw
+    in kleinere stukjes van `herkansing`, zodat één slechte rij (bv. een
+    CHECK-fout, een rare original_data, een timeout) niet duizend goede rijen
+    meesleept in de mislukking.
+
+    schrijf(chunk) doet het echte verzoek (insert of upsert) en gooit een
+    Exception bij een fout. label komt in de logregel zodat insert- en
+    heractief-fouten uit elkaar te houden blijven in de logs.
+    Geeft het aantal rijen terug dat ook na de herkansing nog mislukte.
+    """
+    fouten = 0
+    for i in range(0, len(rijen), stuk):
+        chunk = rijen[i:i + stuk]
+        try:
+            schrijf(chunk)
+        except Exception as e:
+            print(f"Batch fout ({label}), herkansing in stukken van {herkansing}: {e}")
+            for j in range(0, len(chunk), herkansing):
+                stukje = chunk[j:j + herkansing]
+                try:
+                    schrijf(stukje)
+                except Exception as e2:
+                    fouten += len(stukje)
+                    print(f"Batch fout ({label}), blijft mislukken: {e2}")
+    return fouten
+
 def bestaande_lead_info(phones, chunk_size=200):
     """Haal per nummer de velden op die nodig zijn om te ontdubbelen.
 
@@ -234,10 +283,7 @@ def bestaande_lead_info(phones, chunk_size=200):
     unique = list({p for p in phones if p})
     gevonden = {}
     for i in range(0, len(unique), chunk_size):
-        res = supabase.table('leads') \
-            .select('id,phone,direction,status,result,first_attempt,ended_at') \
-            .in_('phone', unique[i:i + chunk_size]).execute()
-        for rij in (res.data or []):
+        for rij in _haal_lead_rijen_zonder_afkap(unique[i:i + chunk_size]):
             tel = rij['phone']
             huidig = gevonden.setdefault(
                 tel, {"sale": False, "open": False, "laatste_contact": None,
@@ -1300,11 +1346,11 @@ def toon_import_resultaat(r):
     if r.get("soort") == "leads":
         st.markdown(f"**Batch:** `{r['batch_id']}`")
         st.caption(f"Ontdubbeld tegen: **{r.get('periode', 'Hele database')}**")
-        a, b, i = st.columns(3)
+        a, b, k = st.columns(3)
         a.metric("📄 Regels in bestand", r["totaal"])
         b.metric("🆕 Nieuw toegevoegd", r["toegevoegd"],
                  help="Nummers die nog niet in het systeem stonden.")
-        i.metric("♻️ Opnieuw belbaar", r["heractief"],
+        k.metric("♻️ Opnieuw belbaar", r.get("heractief", 0),
                  help="Nummers die er al stonden en nu weer in de wachtrij zijn gezet.")
         c, d, e = st.columns(3)
         c.metric("🔄 Recent contact", r["recent_contact"],
@@ -1320,13 +1366,13 @@ def toon_import_resultaat(r):
         if r["mislukt"]:
             st.error(f"{r['mislukt']} leads konden NIET worden opgeslagen "
                      "(databasefout — zie logs).")
-        elif r["toegevoegd"] + r["heractief"] == 0:
+        elif r["toegevoegd"] + r.get("heractief", 0) == 0:
             st.warning("Er is **niets** aan de wachtrij toegevoegd. Alle nummers "
                        "waren al in het systeem, op de blacklist, of ongeldig. "
                        "Daarom steeg de wachtrij niet.")
         else:
-            st.success(f"{r['toegevoegd'] + r['heractief']} leads staan nu in de wachtrij "
-                       f"({r['toegevoegd']} nieuw, {r['heractief']} opnieuw belbaar).")
+            st.success(f"{r['toegevoegd'] + r.get('heractief', 0)} leads staan nu in de wachtrij "
+                       f"({r['toegevoegd']} nieuw, {r.get('heractief', 0)} opnieuw belbaar).")
         if r["recent_contact"] and r.get("periode") != "Hele database":
             st.info(f"💡 {r['recent_contact']} nummers vielen af op 'recent contact'. "
                     "Met een kortere periode zouden er meer doorkomen.")
@@ -1434,34 +1480,24 @@ with st.expander("📂 Leads & Blacklist Importeren", expanded=False):
 
                         if i % 100 == 0: progress.progress(min(i / len(df), 1.0))
 
-                    fouten_nieuw = 0
-                    if to_upload:
-                        # Gewone insert: dubbele nummers zijn hierboven al
-                        # weggefilterd. upsert(on_conflict='phone') werkt niet
-                        # meer sinds de phone-constraint partieel is (alleen
-                        # outbound) → gaf Error 42P10 en stille mislukte imports.
-                        for i in range(0, len(to_upload), 1000):
-                            chunk = to_upload[i:i+1000]
-                            try:
-                                supabase.table('leads').insert(chunk).execute()
-                            except Exception as e:
-                                fouten_nieuw += len(chunk)
-                                print(f"Batch fout (insert): {e}")
+                    # Gewone insert: dubbele nummers zijn hierboven al
+                    # weggefilterd. upsert(on_conflict='phone') werkt niet meer
+                    # sinds de phone-constraint partieel is (alleen outbound) →
+                    # gaf Error 42P10 en stille mislukte imports.
+                    fouten_nieuw = _schrijf_in_stukken(
+                        to_upload,
+                        lambda chunk: supabase.table('leads').insert(chunk).execute(),
+                        "insert")
 
-                    fouten_heractief = 0
-                    if to_update:
-                        # Bijwerken op de primaire sleutel: één verzoek per 1000
-                        # rijen, en tóch per rij een eigen naam en original_data.
-                        # on_conflict='phone' kan hier niet — die constraint is
-                        # partieel (alleen outbound) en geeft Error 42P10.
-                        for i in range(0, len(to_update), 1000):
-                            chunk = to_update[i:i+1000]
-                            try:
-                                supabase.table('leads').upsert(
-                                    chunk, on_conflict='id').execute()
-                            except Exception as e:
-                                fouten_heractief += len(chunk)
-                                print(f"Batch fout (heractief): {e}")
+                    # Bijwerken op de primaire sleutel: tóch per rij een eigen
+                    # naam en original_data. on_conflict='phone' kan hier niet
+                    # — die constraint is partieel (alleen outbound) en geeft
+                    # Error 42P10.
+                    fouten_heractief = _schrijf_in_stukken(
+                        to_update,
+                        lambda chunk: supabase.table('leads').upsert(
+                            chunk, on_conflict='id').execute(),
+                        "heractief")
 
                     fouten = fouten_nieuw + fouten_heractief
 
