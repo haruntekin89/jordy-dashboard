@@ -61,6 +61,47 @@ automatisch aan de veilige kant.
 **Standaard blijft "hele database"**, zodat een import zonder nadenken hetzelfde doet als
 vandaag.
 
+## Toevoegen of hergebruiken
+
+**Ontdekt tijdens de eindreview (29-07), na het bouwen van taken 1-4.** In `leads` mag
+elk telefoonnummer maar **één uitgaande rij** hebben: er ligt een unieke index op `phone`
+die alleen voor `direction = 'outbound'` geldt.
+
+Gemeten bewijs:
+- 60.000 gescande rijen → 60.000 unieke nummers, nul dubbele
+- 142 van 150 gecontroleerde inkomende nummers bestaan óók als uitgaande rij — inkomend
+  mág dus wel dubbelen
+- `dashboard.py` documenteert de partiële constraint al in een eerdere fix
+  ("upsert(on_conflict='phone') werkt niet meer sinds de phone-constraint partieel is")
+
+Dat raakt de kern van deze functie: een nummer dat door regel 4 heen komt, is per
+definitie een nummer dát al een uitgaande rij heeft. Een tweede rij toevoegen botst met
+de index. Omdat er per 1000 tegelijk wordt weggeschreven, laat één botsing de hele groep
+van 1000 mislukken — inclusief de echt nieuwe leads die daar toevallig in zaten.
+
+**Daarom: hergebruiken in plaats van toevoegen.** Nadat `beoordeel_nummer` `"nieuw"`
+zegt, splitst de import:
+
+| situatie | actie |
+|---|---|
+| nummer heeft al een uitgaande rij | die rij **bijwerken**: terug op `status='new'`, `result` leeg, nieuwe `batch_id`, naam en `original_data` uit het nieuwe bestand |
+| nummer heeft alleen een inkomende rij, of staat er niet | **nieuwe rij toevoegen** |
+
+Bijwerken gebeurt met `upsert(..., on_conflict='id')` op de primaire sleutel, in groepen
+van 1000. Zo blijft het één verzoek per 1000 rijen én kan elke rij toch zijn eigen naam en
+`original_data` krijgen. `on_conflict='phone'` kan hier niet: die constraint is partieel
+en geeft Error 42P10.
+
+`reset_count` wordt bewust **niet** aangeraakt en **niet** gecontroleerd. Die teller hoort
+bij de automatische reset-knop (max 3 rondes per nummer). Een import is een expliciete
+handmatige keuze met een expliciete periode; die twee mechanismen door elkaar halen maakt
+allebei onduidelijk. Gevolg om te weten: door opnieuw te importeren kun je de
+3-pogingen-grens omzeilen.
+
+De belgeschiedenis (`first_attempt`, `ended_at`, `ended_reason`, `sip_status`) blijft
+staan. Dat is ook nodig: een vólgende import moet nog kunnen zien wanneer het laatste
+contact was. `motor.py` overschrijft `first_attempt` zelf zodra er weer gebeld wordt.
+
 ## Interface
 
 Een `st.radio` boven de importknop, alleen zichtbaar bij "Leads voor Dialer":
@@ -151,7 +192,8 @@ tijdstip kan meegeven.
 
 | veld | betekenis |
 |---|---|
-| `toegevoegd` | geïmporteerd |
+| `toegevoegd` | als nieuwe rij toegevoegd |
+| `heractief` | bestaande rij hergebruikt (weer belbaar gemaakt) |
 | `recent_contact` | geblokkeerd door regel 4 |
 | `sale` | geblokkeerd door regel 2 |
 | `blacklist` | geblokkeerd door regel 1 |
