@@ -1288,24 +1288,33 @@ with st.expander("📊 Batch Rapportage", expanded=False):
 def toon_import_resultaat(r):
     if r.get("soort") == "leads":
         st.markdown(f"**Batch:** `{r['batch_id']}`")
+        st.caption(f"Ontdubbeld tegen: **{r.get('periode', 'Hele database')}**")
         a, b = st.columns(2)
         a.metric("📄 Regels in bestand", r["totaal"])
         b.metric("🆕 Toegevoegd aan wachtrij", r["toegevoegd"])
-        c, d = st.columns(2)
-        c.metric("🔄 Dubbel (al in systeem)", r["dubbel"])
-        d.metric("⛔ Op blacklist", r["blacklist"])
-        e, f = st.columns(2)
-        e.metric("⚠️ Ongeldig nummer", r["ongeldig"])
-        f.metric("❌ Mislukt (DB-fout)", r["mislukt"])
+        c, d, e = st.columns(3)
+        c.metric("🔄 Recent contact", r["recent_contact"],
+                 help="Al eerder gebeld of teruggebeld binnen de gekozen periode.")
+        d.metric("💰 Sale", r["sale"],
+                 help="Hier is al een succes uit gekomen — nooit opnieuw bellen.")
+        e.metric("⏳ Nog open", r["nog_open"],
+                 help="Staat al in de wachtrij of is in gesprek.")
+        f, g, h = st.columns(3)
+        f.metric("⛔ Op blacklist", r["blacklist"])
+        g.metric("⚠️ Ongeldig nummer", r["ongeldig"])
+        h.metric("❌ Mislukt (DB-fout)", r["mislukt"])
         if r["mislukt"]:
             st.error(f"{r['mislukt']} leads konden NIET worden opgeslagen "
                      "(databasefout — zie logs).")
         elif r["toegevoegd"] == 0:
             st.warning("Er is **niets** aan de wachtrij toegevoegd. Alle nummers "
-                       "waren al in het systeem (dubbel), op de blacklist, of ongeldig. "
+                       "waren al in het systeem, op de blacklist, of ongeldig. "
                        "Daarom steeg de wachtrij niet.")
         else:
             st.success(f"{r['toegevoegd']} nieuwe leads staan nu in de wachtrij.")
+        if r["recent_contact"] and r.get("periode") != "Hele database":
+            st.info(f"💡 {r['recent_contact']} nummers vielen af op 'recent contact'. "
+                    "Met een kortere periode zouden er meer doorkomen.")
     else:
         st.markdown("**Blacklist bijgewerkt**")
         a, b = st.columns(2)
