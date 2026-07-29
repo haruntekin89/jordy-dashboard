@@ -1340,8 +1340,15 @@ with st.expander("📂 Leads & Blacklist Importeren", expanded=False):
             phone_col = st.selectbox("Welke kolom is het telefoonnummer?", ["Kies..."] + cols)
 
             name_col = None
+            periode_keuze = "Hele database"
             if import_doel == "📞 Leads voor Dialer":
                 name_col = st.selectbox("Welke kolom is de naam?", ["Kies..."] + cols)
+                periode_keuze = st.radio(
+                    "Ontdubbelen tegen:", list(PERIODE_KEUZES.keys()), index=0,
+                    help="Bepaalt hoe ver terug een eerder contact een nummer blokkeert.")
+                st.caption(
+                    "ℹ️ Blacklist, sales en nummers die nog in de wachtrij staan of "
+                    "in gesprek zijn, worden altijd geblokkeerd — ongeacht de periode.")
 
             if st.button(f"🚀 Start Import naar {import_doel}") and phone_col != "Kies...":
                 progress = st.progress(0)
@@ -1358,31 +1365,36 @@ with st.expander("📂 Leads & Blacklist Importeren", expanded=False):
 
                     # Check alleen de nummers uit dit bestand tegen DB (niet hele tabel ophalen)
                     geldige = [p for p in clean_phones if p]
-                    existing_numbers = existing_phones('leads', geldige)
+                    lead_info = bestaande_lead_info(geldige)
                     blacklist_numbers = existing_phones('blacklist', geldige)
+                    grens = periode_grens(PERIODE_KEUZES[periode_keuze])
 
                     to_upload = []
-                    c_new, c_dup, c_black, c_inv = 0, 0, 0, 0
+                    tellers = {"nieuw": 0, "blacklist": 0, "sale": 0,
+                               "nog_open": 0, "recent_contact": 0}
+                    c_inv = 0
 
                     for i, (index, row) in enumerate(df.iterrows()):
                         clean = clean_phones[i]
                         if not clean:
                             c_inv += 1
-                        elif clean in blacklist_numbers:
-                            c_black += 1
-                        elif clean in existing_numbers:
-                            c_dup += 1
                         else:
-                            clean_naam = str(row[name_col]) if name_col and name_col != "Kies..." else "Klant"
-                            to_upload.append({
-                                "phone": clean,
-                                "name": clean_naam,
-                                "status": "new",
-                                "batch_id": batch_id,
-                                "original_data": row.to_dict()
-                            })
-                            existing_numbers.add(clean)
-                            c_new += 1
+                            oordeel = beoordeel_nummer(
+                                lead_info.get(clean), clean in blacklist_numbers, grens)
+                            tellers[oordeel] += 1
+                            if oordeel == "nieuw":
+                                clean_naam = str(row[name_col]) if name_col and name_col != "Kies..." else "Klant"
+                                to_upload.append({
+                                    "phone": clean,
+                                    "name": clean_naam,
+                                    "status": "new",
+                                    "batch_id": batch_id,
+                                    "original_data": row.to_dict()
+                                })
+                                # Zelfde nummer verderop in het bestand telt als
+                                # 'nog open', want het staat nu in de wachtrij.
+                                lead_info[clean] = {"sale": False, "open": True,
+                                                    "laatste_contact": None}
 
                         if i % 100 == 0: progress.progress(min(i / len(df), 1.0))
 
@@ -1404,9 +1416,12 @@ with st.expander("📂 Leads & Blacklist Importeren", expanded=False):
                         "soort": "leads",
                         "batch_id": batch_id,
                         "totaal": len(df),
-                        "toegevoegd": c_new - fouten,
-                        "dubbel": c_dup,
-                        "blacklist": c_black,
+                        "periode": periode_keuze,
+                        "toegevoegd": tellers["nieuw"] - fouten,
+                        "recent_contact": tellers["recent_contact"],
+                        "sale": tellers["sale"],
+                        "blacklist": tellers["blacklist"],
+                        "nog_open": tellers["nog_open"],
                         "ongeldig": c_inv,
                         "mislukt": fouten,
                     }
