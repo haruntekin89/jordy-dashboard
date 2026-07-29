@@ -504,9 +504,12 @@ elif current_status == "AAN" and bel_api_status == "DOWN":
 st.markdown("## 🧠 Slimme dialer — meekijk-modus")
 st.caption("Wat de slimme dialer ZOU doen. Hij voert nog niets uit — jij kijkt mee.")
 
-# Snelle versie (2 server-RPC's). Achter een vinkje + foutopvang, zodat het de rest
-# van het dashboard nooit kan laten crashen. Standaard AAN want het laadt nu in seconden.
-_toon_meekijk = st.checkbox("Meekijk-modus tonen", value=True, key="toon_meekijk")
+# Achter een vinkje + foutopvang, zodat het de rest van het dashboard nooit kan laten
+# crashen. Standaard UIT sinds 29-07: de leads-tabel is naar ~780k rijen gegroeid en de
+# batch_meekijk-RPC scant die helemaal, waardoor hij over de Postgres statement-timeout
+# (8s) heen ging. Elke paginalading wachtte dus 8s en toonde daarna een fout. Weer op
+# True zetten zodra de snellere RPC uit sql/meekijk_rpc.sql live staat.
+_toon_meekijk = st.checkbox("Meekijk-modus tonen", value=False, key="toon_meekijk")
 if not _toon_meekijk:
     st.caption("⬆️ Vink aan om de meekijk-modus te tonen.")
 else:

@@ -1,24 +1,45 @@
 -- Meekijk-modus snelle data-helpers (READ-ONLY, stable).
--- Vervangen ~650 losse tel-queries door 2 RPC-aanroepen.
 -- Plak dit hele blok in Supabase → SQL Editor → Run. Project: ckpoxeoqbmptbwjgypmb.
+--
 -- LET OP: first_attempt is een TEKST-kolom (naïef UTC) → cast via nullif(...,'')::timestamp
 -- (veilig tegen NULL en lege strings), daarna omrekenen naar Europe/Amsterdam.
+--
+-- VERSIE 2 (29-07-2026) — waarom herschreven:
+--   1) SNELHEID. De leads-tabel is naar ~780k rijen gegroeid. De oude versie deed de
+--      dure tekst→timestamp-cast van first_attempt 8x PER RIJ (één keer in elke
+--      count-filter). Dat zijn ~6 miljoen casts per aanroep en dat kroop over de
+--      Postgres statement-timeout van 8s heen → de RPC faalde. Nu wordt de cast ÉÉN
+--      keer per rij gedaan in een CTE, en de venstergrenzen worden één keer vooraf
+--      omgerekend i.p.v. per rij.
+--   2) JUISTE 'herbelbaar'. De oude definitie (alles wat niet-bereikt is) week af van
+--      wat de resetknop echt terugzet, dus telde het dashboard het zelf opnieuw met
+--      één query PER BATCH (~78 extra queries per paginalading). Deze versie spiegelt
+--      reset_geen_gehoor() in dashboard.py exact, zodat die lus weg kan.
 
 -- 1) Uur-profiel: per NL-dag/uur het aantal outbound-calls + successen.
 create or replace function uur_profiel_agg(van timestamptz, tot timestamptz)
 returns table(datum date, weekdag int, uur int, gebeld bigint, succes bigint)
 language sql stable as $$
+  with basis as (
+    -- Cast eenmalig per rij; nl = hetzelfde moment in Europe/Amsterdam.
+    select
+      l.result,
+      ((nullif(l.first_attempt,'')::timestamp at time zone 'UTC') at time zone 'Europe/Amsterdam') as nl
+    from leads l
+    where l.direction = 'outbound'
+      and nullif(l.first_attempt,'') is not null
+      -- Venstergrenzen als naïef-UTC constanten: geen per-rij tijdzone-omrekening
+      -- meer nodig om te filteren.
+      and nullif(l.first_attempt,'')::timestamp >= (van at time zone 'UTC')
+      and nullif(l.first_attempt,'')::timestamp <  (tot at time zone 'UTC')
+  )
   select
-    (nullif(first_attempt,'')::timestamp at time zone 'UTC' at time zone 'Europe/Amsterdam')::date as datum,
-    (extract(isodow from (nullif(first_attempt,'')::timestamp at time zone 'UTC' at time zone 'Europe/Amsterdam'))::int - 1) as weekdag,  -- 0=ma .. 6=zo
-    extract(hour from (nullif(first_attempt,'')::timestamp at time zone 'UTC' at time zone 'Europe/Amsterdam'))::int as uur,
-    count(*)::bigint                                   as gebeld,
-    count(*) filter (where result = 'SUCCES')::bigint  as succes
-  from leads
-  where direction = 'outbound'
-    and nullif(first_attempt,'') is not null
-    and (nullif(first_attempt,'')::timestamp at time zone 'UTC') >= van
-    and (nullif(first_attempt,'')::timestamp at time zone 'UTC') <  tot
+    nl::date                                          as datum,
+    (extract(isodow from nl)::int - 1)                as weekdag,  -- 0=ma .. 6=zo
+    extract(hour from nl)::int                        as uur,
+    count(*)::bigint                                  as gebeld,
+    count(*) filter (where result = 'SUCCES')::bigint as succes
+  from basis
   group by 1, 2, 3
 $$;
 
@@ -30,23 +51,47 @@ returns table(
   new_count bigint, laatste_poging timestamptz, herbelbaar bigint, dood_count bigint
 )
 language sql stable as $$
+  with basis as (
+    select
+      l.batch_id      as bid,
+      l.direction     as dir,
+      l.status        as st,
+      l.result        as res,
+      l.ended_reason  as reden,
+      l.sip_status    as sip,
+      l.reset_count   as rc,
+      nullif(l.first_attempt,'')::timestamp as fa   -- ÉÉN cast per rij (naïef UTC)
+    from leads l
+    where l.batch_id is not null
+  ),
+  gemarkeerd as (
+    select b.*,
+      (b.dir = 'outbound' and b.fa is not null
+        and b.fa >= (van at time zone 'UTC')
+        and b.fa <  (tot at time zone 'UTC')) as in_venster
+    from basis b
+  )
   select
-    batch_id,
-    count(*) filter (where direction='outbound' and (nullif(first_attempt,'')::timestamp at time zone 'UTC') >= van and (nullif(first_attempt,'')::timestamp at time zone 'UTC') < tot)::bigint as gebeld,
-    count(*) filter (where direction='outbound' and (nullif(first_attempt,'')::timestamp at time zone 'UTC') >= van and (nullif(first_attempt,'')::timestamp at time zone 'UTC') < tot and ended_reason in ('klant-ended-call','assistant-ended-call'))::bigint as bereikt,
-    count(*) filter (where direction='outbound' and (nullif(first_attempt,'')::timestamp at time zone 'UTC') >= van and (nullif(first_attempt,'')::timestamp at time zone 'UTC') < tot and result='SUCCES')::bigint as succes,
-    count(*) filter (where direction='outbound' and (nullif(first_attempt,'')::timestamp at time zone 'UTC') >= van and (nullif(first_attempt,'')::timestamp at time zone 'UTC') < tot and sip_status='404')::bigint as dood404,
-    count(*) filter (where status='new')::bigint as new_count,
-    (max(nullif(first_attempt,'')::timestamp) filter (where direction='outbound') at time zone 'UTC') as laatste_poging,
-    count(*) filter (where direction='outbound' and status<>'new'
-                       and (ended_reason is null or ended_reason not in ('klant-ended-call','assistant-ended-call'))
-                       and (sip_status is null or sip_status <> '404'))::bigint as herbelbaar,
-    count(*) filter (where direction='outbound' and sip_status='404')::bigint as dood_count
-  from leads
-  where batch_id is not null
-  group by batch_id
+    bid                                                                    as batch_id,
+    count(*) filter (where in_venster)::bigint                             as gebeld,
+    count(*) filter (where in_venster
+      and reden in ('klant-ended-call','assistant-ended-call'))::bigint    as bereikt,
+    count(*) filter (where in_venster and res = 'SUCCES')::bigint          as succes,
+    count(*) filter (where in_venster and sip = '404')::bigint             as dood404,
+    count(*) filter (where st = 'new')::bigint                             as new_count,
+    (max(fa) filter (where dir = 'outbound') at time zone 'UTC')           as laatste_poging,
+    -- Herbelbaar = precies wat reset_geen_gehoor() in dashboard.py terugzet:
+    -- geen-gehoor-reden, nog geen 3 belpogingen (reset_count < 2; NULL telt niet mee,
+    -- want die zet de resetknop ook niet terug) en geen dood nummer (404).
+    count(*) filter (where reden in ('customer-did-not-answer','no-answer-transfer',
+                                     'voicemail','silence-timed-out','geen-mens')
+                       and rc < 2
+                       and (sip is null or sip <> '404'))::bigint          as herbelbaar,
+    count(*) filter (where dir = 'outbound' and sip = '404')::bigint       as dood_count
+  from gemarkeerd
+  group by bid
 $$;
 
--- Snelle controle (mag je ook draaien):
--- select * from uur_profiel_agg(now() - interval '2 days', now()) order by uur;
+-- Snelle controle (mag je ook draaien) — kijk vooral naar de looptijd onderaan:
+-- select * from uur_profiel_agg(now() - interval '14 days', now()) order by uur;
 -- select * from batch_meekijk(now() - interval '14 days', now()) limit 5;
