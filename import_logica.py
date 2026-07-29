@@ -31,8 +31,8 @@ def naar_naief_utc(waarde):
         return None
     try:
         moment = datetime.fromisoformat(waarde)
-    except (ValueError, TypeError):
-        # Ongeldige ISO-tekst of onverwacht type — geen contactmoment bekend
+    except ValueError:
+        # Ongeldige ISO-tekst — geen contactmoment bekend
         return None
     if moment.tzinfo is not None:
         moment = moment.astimezone(timezone.utc).replace(tzinfo=None)
