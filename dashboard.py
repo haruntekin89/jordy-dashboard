@@ -421,13 +421,12 @@ def cached_reset_info(paused_json):
             dagen = 999.0
         # Alleen nummers die nog GEEN 3 pogingen hebben (reset_count < 2) tellen als
         # herbelbaar — spiegelt exact wat reset_geen_gehoor daadwerkelijk terugzet.
-        herbelbaar = supabase.table("leads").select("id", count="exact", head=True) \
-            .eq("batch_id", r["batch_id"]).in_("ended_reason", GEEN_GEHOOR_REDENEN) \
-            .lt("reset_count", 2).or_("sip_status.neq.404,sip_status.is.null") \
-            .execute().count or 0
+        # Komt sinds 29-07 uit de RPC zelf (sql/meekijk_rpc.sql v3). Stond hier eerst
+        # als één losse tel-query PER BATCH; dat waren ~78 extra queries per
+        # paginalading bovenop de RPC.
         out.append({"batch_id": r["batch_id"], "new_count": r.get("new_count") or 0,
                     "laatste_poging_dagen": round(dagen, 1),
-                    "herbelbaar_count": herbelbaar,
+                    "herbelbaar_count": r.get("herbelbaar") or 0,
                     "dood_count": r.get("dood_count") or 0})
     return out
 
@@ -505,11 +504,10 @@ st.markdown("## 🧠 Slimme dialer — meekijk-modus")
 st.caption("Wat de slimme dialer ZOU doen. Hij voert nog niets uit — jij kijkt mee.")
 
 # Achter een vinkje + foutopvang, zodat het de rest van het dashboard nooit kan laten
-# crashen. Standaard UIT sinds 29-07: de leads-tabel is naar ~780k rijen gegroeid en de
-# batch_meekijk-RPC scant die helemaal, waardoor hij over de Postgres statement-timeout
-# (8s) heen ging. Elke paginalading wachtte dus 8s en toonde daarna een fout. Weer op
-# True zetten zodra de snellere RPC uit sql/meekijk_rpc.sql live staat.
-_toon_meekijk = st.checkbox("Meekijk-modus tonen", value=False, key="toon_meekijk")
+# crashen. Weer standaard AAN sinds sql/meekijk_rpc.sql v3 (29-07): batch_meekijk ging
+# van 6,75s (over de 8s statement-timeout) naar 0,66s, en de ~78 losse tel-queries per
+# batch zijn vervangen door de herbelbaar-kolom uit diezelfde RPC.
+_toon_meekijk = st.checkbox("Meekijk-modus tonen", value=True, key="toon_meekijk")
 if not _toon_meekijk:
     st.caption("⬆️ Vink aan om de meekijk-modus te tonen.")
 else:
