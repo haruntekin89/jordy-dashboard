@@ -144,6 +144,8 @@ Een `st.radio` boven de importknop, alleen zichtbaar bij "Leads voor Dialer":
 ```
 Ontdubbelen tegen:
   (•) Hele database          ← standaard
+  ( ) Laatste 1 maand
+  ( ) Laatste 2 maanden
   ( ) Laatste 3 maanden
   ( ) Laatste 6 maanden
   ( ) Laatste 12 maanden
@@ -151,6 +153,12 @@ Ontdubbelen tegen:
   ℹ️ Blacklist, sales en nummers die nog in de wachtrij staan
      worden altijd geblokkeerd, ongeacht de periode.
 ```
+
+De opties 1 en 2 maanden zijn er op 29-07 bijgekomen. Reden: de oudste belpoging in
+`leads` is 2026-06-02, dus 3/6/12 maanden selecteerden op dat moment **nul** leads en
+gedroegen zich alle drie als "Hele database". Met 1 maand vallen er 223.099 afgeronde
+outbound-leads binnen bereik. Naarmate de data ouder wordt, worden de langere periodes
+vanzelf zinvol.
 
 ## Techniek
 
