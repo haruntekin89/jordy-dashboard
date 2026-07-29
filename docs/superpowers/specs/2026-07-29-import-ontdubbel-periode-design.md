@@ -30,8 +30,8 @@ Per genormaliseerd nummer geldt de eerste regel die raak is:
 |---|---|---|---|
 | 1 | Staat op de blacklist | blokkeren | nee |
 | 2 | Heeft ooit `result = 'SUCCES'` (sale) | blokkeren | nee |
-| 3 | Staat nog op `status = 'new'` (nog te bellen) | blokkeren | nee |
-| 4 | Laatste belpoging binnen de gekozen periode | blokkeren | **ja** |
+| 3 | `status` is niet `finished` (dus `new` of `in-progress`) | blokkeren | nee |
+| 4 | Laatste contact binnen de gekozen periode | blokkeren | **ja** |
 | 5 | Geen van bovenstaande | importeren | — |
 
 Bij keuze "hele database" vervalt regel 4 en blokkeert elk nummer dat al in `leads`
@@ -42,14 +42,24 @@ inbound-rij). Blokkeren gebeurt zodra **één** rij een blokkeerregel raakt.
 
 ### Waarom deze keuzes
 
-- **Periode wordt gemeten op `first_attempt`** (laatste belpoging), niet op `created_at`
-  (importdatum). De vraag is "hebben we dit nummer recent nog gebeld?", niet "wanneer
-  kwam het binnen?". Rijen zonder `first_attempt` zijn nooit gebeld en vallen al onder
-  regel 3.
-- **Regel 3 bestaat** omdat een nummer anders twee keer in de wachtrij kan komen: de
-  bestaande rij is nog niet gebeld, dus regel 4 zou 'm doorlaten.
-- **Standaard blijft "hele database"**, zodat een import zonder nadenken hetzelfde doet
-  als vandaag.
+**"Laatste contact" = de laatste van `first_attempt` en `ended_at`**, niet alleen
+`first_attempt`. Gemeten op de productiedatabase (29-07): 34.896 rijen hebben géén
+`first_attempt` terwijl `status` wel `finished` is. Dat zijn **inkomende** gesprekken —
+mensen die ons terugbelden (`ended_reason = 'inbound-ended-call'`, batch `oude_import`).
+Wie ons vorige maand nog belde, moet niet als "nooit contact gehad" gelden. Rijen die
+béide velden missen bestaan niet: gemeten 0.
+
+`created_at` (importdatum) is bewust géén onderdeel van "laatste contact". De vraag is
+"hebben we dit nummer recent gesproken?", niet "wanneer kwam het binnen?".
+
+**Regel 3 kijkt naar `status != 'finished'`**, niet alleen naar `new`. De echte
+statuswaarden zijn `finished` (751.515), `new` (21.852) en `in-progress` (7.211). Die
+laatste groep is aan de lijn of blijven hangen; hoe dan ook nog niet afgerond, dus niet
+opnieuw importeren. Door op "niet finished" te toetsen valt een toekomstige nieuwe status
+automatisch aan de veilige kant.
+
+**Standaard blijft "hele database"**, zodat een import zonder nadenken hetzelfde doet als
+vandaag.
 
 ## Interface
 
@@ -74,40 +84,66 @@ Ontdubbelen tegen:
 blijft ongewijzigd voor de blacklist.
 
 Voor leads komt er een aparte functie die dezelfde chunk-aanpak gebruikt (200 nummers per
-`IN`-query) maar `phone, status, result, first_attempt` ophaalt, en per nummer een
-samengevat oordeel teruggeeft:
+`IN`-query) maar `phone, status, result, first_attempt, ended_at` ophaalt, en de rijen per
+nummer samenvat tot één oordeel:
 
 ```python
 def bestaande_lead_info(phones, chunk_size=200):
-    """phone -> {'sale': bool, 'in_wachtrij': bool, 'laatste_poging': str|None}
+    """phone -> {'sale': bool, 'open': bool, 'laatste_contact': datetime|None}
 
-    laatste_poging = hoogste first_attempt over alle rijen van dat nummer, als tekst
-    (naïef UTC). Tekstvergelijking is hier geldig: het formaat is vast — zie
-    sql/meekijk_rpc.sql v3 en motor.py:362.
+    Samengevat over ALLE rijen van dat nummer:
+      sale            = ergens result == 'SUCCES'
+      open            = ergens status != 'finished'
+      laatste_contact = hoogste van alle first_attempt- en ended_at-waarden,
+                        als naïeve UTC-datetime
     """
 ```
 
 De beslissing valt daarna in Python. Het **aantal database-queries blijft gelijk** aan nu;
 er komen alleen kolommen bij.
 
-### Periodegrens
+### Datums gelijktrekken
 
-De grens wordt één keer berekend als tekst in hetzelfde formaat als `first_attempt`:
-**naïef UTC**, zonder tijdzone-achtervoegsel, want zo schrijft `motor.py` de kolom
-(`datetime.now().isoformat()` op een server die op UTC staat).
+De twee datumkolommen hebben een **verschillend formaat**:
+
+| kolom | voorbeeld | soort |
+|---|---|---|
+| `first_attempt` | `2026-06-10T10:44:13.462284` | tekst, naïef UTC |
+| `ended_at` | `2026-06-08T08:24:34.702106+00:00` | timestamptz, mét tijdzone |
+
+Ze worden daarom niet als tekst vergeleken maar omgezet naar naïeve UTC-datetimes:
+
+```python
+def naar_naief_utc(waarde):
+    """ISO-tekst (met of zonder tijdzone) -> naïeve UTC-datetime, of None."""
+    if not waarde:
+        return None
+    d = datetime.fromisoformat(waarde)
+    if d.tzinfo is not None:
+        d = d.astimezone(timezone.utc).replace(tzinfo=None)
+    return d
+```
+
+Dit gebeurt per nummer in Python, niet in SQL, dus het kost geen extra queries. Tekst
+vergelijken zoals in `sql/meekijk_rpc.sql` mag hier juist **niet**: dat werkt alleen bij
+één vast formaat, en hier zijn het er twee.
+
+### Periodegrens
 
 ```python
 from dateutil.relativedelta import relativedelta   # python-dateutil==2.9.0.post0, al gepind
 
-grens = None if maanden is None else (
-    datetime.now(timezone.utc).replace(tzinfo=None) - relativedelta(months=maanden)
-).isoformat()
+def periode_grens(maanden, nu=None):
+    """Ondergrens als naïeve UTC-datetime; None betekent 'hele database'."""
+    if maanden is None:
+        return None
+    nu = nu or datetime.now(timezone.utc).replace(tzinfo=None)
+    return nu - relativedelta(months=maanden)
 ```
 
 `datetime.now(timezone.utc).replace(tzinfo=None)` en niet `datetime.utcnow()`: die laatste
-is verouderd en geeft een waarschuwing.
-
-`grens is None` betekent "hele database".
+is verouderd en geeft een waarschuwing. De parameter `nu` bestaat zodat de test een vast
+tijdstip kan meegeven.
 
 ### Uitslag
 
@@ -116,33 +152,45 @@ is verouderd en geeft een waarschuwing.
 | veld | betekenis |
 |---|---|
 | `toegevoegd` | geïmporteerd |
-| `recent_gebeld` | geblokkeerd door regel 4 |
+| `recent_contact` | geblokkeerd door regel 4 |
 | `sale` | geblokkeerd door regel 2 |
 | `blacklist` | geblokkeerd door regel 1 |
-| `in_wachtrij` | geblokkeerd door regel 3 |
+| `nog_open` | geblokkeerd door regel 3 (in wachtrij of in gesprek) |
 | `ongeldig` | nummer kon niet genormaliseerd worden |
 | `mislukt` | insert gaf een fout |
 
 De bestaande pop-up (zie geheugen `import_resultaat_popup`) toont deze uitsplitsing, zodat
 zichtbaar is of een ruimere periode zou helpen.
 
-Bij "hele database" telt alles wat vroeger `dubbel` heette nu als `recent_gebeld`; dat
-label blijft kloppen omdat de periode dan oneindig is.
+Bij "hele database" komt alles wat vroeger `dubbel` heette terecht in `recent_contact`;
+dat label klopt dan nog steeds, want de periode is dan oneindig.
 
 ## Testen
 
-`test_dialer_brein.py` test nu pure functies zonder database. De beslislogica wordt
-daarom als **pure functie** geschreven (`beoordeel_nummer(info, op_blacklist, grens)` →
-`"nieuw" | "blacklist" | "sale" | "in_wachtrij" | "recent_gebeld"`), zodat die zonder
-Supabase getest kan worden.
+`test_dialer_brein.py` test pure functies zonder database. Dezelfde aanpak hier: de
+beslislogica komt in een nieuw bestand `import_logica.py` met testbestand
+`test_import_logica.py`, zodat er geen Supabase aan te pas komt.
+
+Kern is één pure functie:
+
+```python
+beoordeel_nummer(info, op_blacklist, grens)
+  -> "nieuw" | "blacklist" | "sale" | "nog_open" | "recent_contact"
+```
 
 Testgevallen:
-- blacklist wint van alles (ook van sale en van buiten de periode)
-- sale blokkeert ook als de belpoging vér buiten de periode ligt
-- `status='new'` blokkeert ook zonder `first_attempt`
-- belpoging net binnen de grens → blokkeren; net erbuiten → nieuw
+- blacklist wint van alles (ook van sale, ook van buiten de periode)
+- sale blokkeert ook als het contact vér buiten de periode ligt
+- `open=True` blokkeert ook als er helemaal geen contactdatum is
+- contact precies óp de grens → blokkeren (grens is inclusief)
+- contact één seconde vóór de grens → nieuw
 - `grens=None` (hele database) → elk bestaand nummer blokkeert
-- nummer met meerdere rijen: één blokkerende rij is genoeg
+- onbekend nummer (`info=None`) → nieuw, ook bij `grens=None`
+
+En voor de twee hulpfuncties:
+- `naar_naief_utc` op tekst mét tijdzone (`...+00:00`) en zónder → zelfde uitkomst
+- `naar_naief_utc(None)` en `naar_naief_utc("")` → `None`
+- `periode_grens(None)` → `None`; `periode_grens(3, nu=vast)` → precies 3 maanden terug
 
 ## Buiten scope
 
