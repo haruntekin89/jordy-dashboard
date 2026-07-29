@@ -8,6 +8,7 @@ from datetime import datetime, date, timedelta, timezone
 import json
 import re
 import dialer_brein
+from import_logica import PERIODE_KEUZES, beoordeel_nummer, naar_naief_utc, periode_grens
 
 # Tijdzone: de database slaat tijden in UTC op; we tonen alles in Nederlandse tijd.
 try:
@@ -211,6 +212,41 @@ def existing_phones(table, phones, chunk_size=200):
         res = supabase.table(table).select('phone').in_('phone', unique[i:i+chunk_size]).execute()
         found.update(row['phone'] for row in (res.data or []))
     return found
+
+def bestaande_lead_info(phones, chunk_size=200):
+    """Haal per nummer de velden op die nodig zijn om te ontdubbelen.
+
+    Zelfde chunk-aanpak als existing_phones (gerichte IN-query, niet de hele
+    tabel ophalen), maar met de kolommen die de beslisregels nodig hebben. Een
+    nummer kan meerdere rijen hebben (bv. een outbound- en een inbound-rij);
+    die worden hier samengevat tot één oordeel, waarbij één blokkerende rij
+    genoeg is.
+
+    Geeft: {phone: {'sale': bool, 'open': bool, 'laatste_contact': datetime|None}}
+    Nummers die niet in leads staan ontbreken in de dict.
+    """
+    if not phones:
+        return {}
+    unique = list({p for p in phones if p})
+    gevonden = {}
+    for i in range(0, len(unique), chunk_size):
+        res = supabase.table('leads') \
+            .select('phone,status,result,first_attempt,ended_at') \
+            .in_('phone', unique[i:i + chunk_size]).execute()
+        for rij in (res.data or []):
+            tel = rij['phone']
+            huidig = gevonden.setdefault(
+                tel, {"sale": False, "open": False, "laatste_contact": None})
+            if rij.get('result') == 'SUCCES':
+                huidig["sale"] = True
+            if rij.get('status') != 'finished':
+                huidig["open"] = True
+            for veld in ('first_attempt', 'ended_at'):
+                moment = naar_naief_utc(rij.get(veld))
+                if moment is not None and (huidig["laatste_contact"] is None
+                                           or moment > huidig["laatste_contact"]):
+                    huidig["laatste_contact"] = moment
+    return gevonden
 
 GEEN_GEHOOR_REDENEN = ["customer-did-not-answer", "no-answer-transfer", "voicemail", "silence-timed-out", "geen-mens"]
 # Échte mens-gesprekken: lijnen waar een mens daadwerkelijk iets zei (dus geen
