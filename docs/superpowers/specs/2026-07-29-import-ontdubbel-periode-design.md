@@ -61,6 +61,82 @@ automatisch aan de veilige kant.
 **Standaard blijft "hele database"**, zodat een import zonder nadenken hetzelfde doet als
 vandaag.
 
+## Toevoegen of hergebruiken
+
+**Ontdekt tijdens de eindreview (29-07), na het bouwen van taken 1-4.** In `leads` mag
+elk telefoonnummer maar **één uitgaande rij** hebben: er ligt een unieke index op `phone`
+die alleen voor `direction = 'outbound'` geldt.
+
+Gemeten bewijs:
+- 60.000 gescande rijen → 60.000 unieke nummers, nul dubbele
+- 142 van 150 gecontroleerde inkomende nummers bestaan óók als uitgaande rij — inkomend
+  mág dus wel dubbelen
+- `dashboard.py` documenteert de partiële constraint al in een eerdere fix
+  ("upsert(on_conflict='phone') werkt niet meer sinds de phone-constraint partieel is")
+
+Dat raakt de kern van deze functie: een nummer dat door regel 4 heen komt, is per
+definitie een nummer dát al een uitgaande rij heeft. Een tweede rij toevoegen botst met
+de index. Omdat er per 1000 tegelijk wordt weggeschreven, laat één botsing de hele groep
+van 1000 mislukken — inclusief de echt nieuwe leads die daar toevallig in zaten.
+
+**Daarom: hergebruiken in plaats van toevoegen.** Nadat `beoordeel_nummer` `"nieuw"`
+zegt, splitst de import:
+
+| situatie | actie |
+|---|---|
+| nummer heeft al een uitgaande rij | die rij **bijwerken**: terug op `status='new'`, `result` leeg, nieuwe `batch_id`, naam en `original_data` uit het nieuwe bestand |
+| nummer heeft alleen een inkomende rij, of staat er niet | **nieuwe rij toevoegen** |
+
+Bijwerken gebeurt met `upsert(..., on_conflict='id')` op de primaire sleutel, in groepen
+van 1000. Zo blijft het één verzoek per 1000 rijen én kan elke rij toch zijn eigen naam en
+`original_data` krijgen. `on_conflict='phone'` kan hier niet: die constraint is partieel
+en geeft Error 42P10.
+
+`reset_count` wordt bewust **niet** aangeraakt en **niet** gecontroleerd. Die teller hoort
+bij de automatische reset-knop (max 3 rondes per nummer). Een import is een expliciete
+handmatige keuze met een expliciete periode; die twee mechanismen door elkaar halen maakt
+allebei onduidelijk. Gevolg om te weten: door opnieuw te importeren kun je de
+3-pogingen-grens omzeilen.
+
+De belgeschiedenis (`first_attempt`, `ended_at`, `ended_reason`, `sip_status`) blijft
+staan. Dat is ook nodig: een vólgende import moet nog kunnen zien wanneer het laatste
+contact was. `motor.py` overschrijft `first_attempt` zelf zodra er weer gebeld wordt.
+
+### Gevolg: batchcijfers schuiven (bewust geaccepteerd, besluit Harun 29-07)
+
+Een hergebruikte lead krijgt de **nieuwe** `batch_id`. Doorslaggevende reden: batches zijn
+per stuk aan/uit te zetten. Blijft een lead in zijn oude batch en staat die UIT, dan wordt
+hij nooit gebeld — dan importeer je 20.000 nummers en gebeurt er niets. Ook toont de
+wachtrij van de nieuwe batch nu hetzelfde aantal als het bestand, wat is wat je verwacht.
+
+Wat je daarvoor inlevert:
+- **Oude batchrapporten veranderen met terugwerkende kracht.** `batch_meekijk` groepeert op
+  de huidige `batch_id`, dus verhuizen er rijen, dan krimpen de cijfers van de oude batch
+  over een al gerapporteerde periode, en lijkt de nieuwe batch gebeld te hebben vóórdat hij
+  bestond.
+- **Een verse batch erft all-time tellers.** `herbelbaar`, `dood_count` en `laatste_poging`
+  zijn niet op de periode begrensd, dus een nieuwe batch begint met tellingen uit gesprekken
+  die er nooit in gevoerd zijn. De reset-knop kan daardoor een reset voorstellen op een
+  batch die nog nooit gebeld is.
+- **Niet aan de hand:** de automatische batch-pauze kijkt naar de laatste 14 dagen en de
+  `first_attempt` van een hergebruikte lead ligt per definitie vóór de gekozen periode, dus
+  een nieuwe batch wordt hier niet per ongeluk op gewicht 0,0 gezet.
+
+### Voorwaarde die vóór gebruik gecontroleerd moet zijn
+
+Het bijwerken stuurt een expliciete `id` mee. Dat mag alleen als `leads.id` **niet**
+`GENERATED ALWAYS AS IDENTITY` is; anders weigert Postgres elke rij (SQLSTATE 428C9) en
+mislukt élk hergebruik, terwijl nieuwe nummers wél binnenkomen — het lijkt dan half te
+werken. Controleren met:
+
+```sql
+select is_identity, identity_generation, column_default
+from information_schema.columns
+where table_name = 'leads' and column_name = 'id';
+```
+
+Veilig bij `identity_generation = 'BY DEFAULT'` of leeg met een `nextval`-default.
+
 ## Interface
 
 Een `st.radio` boven de importknop, alleen zichtbaar bij "Leads voor Dialer":
@@ -68,6 +144,8 @@ Een `st.radio` boven de importknop, alleen zichtbaar bij "Leads voor Dialer":
 ```
 Ontdubbelen tegen:
   (•) Hele database          ← standaard
+  ( ) Laatste 1 maand
+  ( ) Laatste 2 maanden
   ( ) Laatste 3 maanden
   ( ) Laatste 6 maanden
   ( ) Laatste 12 maanden
@@ -75,6 +153,12 @@ Ontdubbelen tegen:
   ℹ️ Blacklist, sales en nummers die nog in de wachtrij staan
      worden altijd geblokkeerd, ongeacht de periode.
 ```
+
+De opties 1 en 2 maanden zijn er op 29-07 bijgekomen. Reden: de oudste belpoging in
+`leads` is 2026-06-02, dus 3/6/12 maanden selecteerden op dat moment **nul** leads en
+gedroegen zich alle drie als "Hele database". Met 1 maand vallen er 223.099 afgeronde
+outbound-leads binnen bereik. Naarmate de data ouder wordt, worden de langere periodes
+vanzelf zinvol.
 
 ## Techniek
 
@@ -151,7 +235,8 @@ tijdstip kan meegeven.
 
 | veld | betekenis |
 |---|---|
-| `toegevoegd` | geïmporteerd |
+| `toegevoegd` | als nieuwe rij toegevoegd |
+| `heractief` | bestaande rij hergebruikt (weer belbaar gemaakt) |
 | `recent_contact` | geblokkeerd door regel 4 |
 | `sale` | geblokkeerd door regel 2 |
 | `blacklist` | geblokkeerd door regel 1 |

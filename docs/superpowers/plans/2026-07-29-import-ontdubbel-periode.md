@@ -675,10 +675,70 @@ Zet die twee plus `+31600000001` in een CSV met kolommen `telefoon,naam`.
 Verwacht: 1 toegevoegd (het verzonnen nummer), 1 sale, 1 nog open.
 De wachtrij-teller op het dashboard stijgt met 1.
 
-- [ ] **Step 4: Importeer hetzelfde bestand nogmaals met "Laatste 3 maanden"**
+- [ ] **Step 3b: Controleer de voorwaarde op `leads.id` (blokkerend)**
 
-Verwacht: 0 toegevoegd, want het verzonnen nummer staat nu zelf in de wachtrij
-en valt onder "nog open". Dit bewijst dat regel 3 werkt.
+Harun draait in de Supabase SQL Editor:
+
+```sql
+select is_identity, identity_generation, column_default
+from information_schema.columns
+where table_name = 'leads' and column_name = 'id';
+```
+
+Veilig bij `identity_generation = 'BY DEFAULT'` of leeg met een `nextval`-default.
+Staat er `ALWAYS`, dan mislukt élk hergebruik en moet Task 6 anders (bijvoorbeeld
+een gewone `update()` per groep zonder `id` in de payload). **Niet verder testen
+voordat dit bekend is.**
+
+- [ ] **Step 4: Test de HERGEBRUIK-route — dit is de belangrijke test**
+
+De oorspronkelijke versie van deze stap (hetzelfde bestand nog eens importeren)
+kon nooit iets vinden: bij de tweede import blokkeert regel 3 ("nog open") vóórdat
+de code aan het wegschrijven toekomt. Precies daardoor bleef de botsing met de
+unieke index onopgemerkt tot de eindreview. Deze stap moet de weg-schrijf-route
+écht raken.
+
+Zoek een nummer dat lang geleden voor het laatst gebeld is en niets bijzonders
+heeft (geen sale, afgerond, geen 404):
+
+```bash
+ssh -i ~/.ssh/leaseweb_jordy -o IdentitiesOnly=yes root@5.79.88.41 \
+  "cd /root/livekit-agent && ./venv/bin/python -c \"
+from dotenv import load_dotenv; load_dotenv('/root/livekit-agent/.env')
+import os
+from supabase import create_client
+s=create_client(os.getenv('SUPABASE_URL'),os.getenv('SUPABASE_KEY'))
+d=s.table('leads').select('id,phone,batch_id,status,result,first_attempt') \
+   .eq('status','finished').eq('direction','outbound').neq('result','SUCCES') \
+   .lt('first_attempt','2026-03-01').limit(3).execute().data
+for r in d: print(r)
+\""
+```
+
+Zet één zo'n nummer in een CSV en importeer met **"Laatste 6 maanden"**.
+
+Verwacht in de pop-up: **0 nieuw toegevoegd, 1 opnieuw belbaar**, 0 mislukt.
+
+Controleer daarna in de database dat er GEEN tweede rij bij is gekomen en dat de
+bestaande rij is bijgewerkt — dit is de kern van wat Task 6 repareert:
+
+```bash
+ssh -i ~/.ssh/leaseweb_jordy -o IdentitiesOnly=yes root@5.79.88.41 \
+  "cd /root/livekit-agent && ./venv/bin/python -c \"
+from dotenv import load_dotenv; load_dotenv('/root/livekit-agent/.env')
+import os
+from supabase import create_client
+s=create_client(os.getenv('SUPABASE_URL'),os.getenv('SUPABASE_KEY'))
+TEL='+31XXXXXXXXX'   # het nummer dat je net importeerde
+d=s.table('leads').select('id,phone,direction,batch_id,status,result,first_attempt') \
+   .eq('phone',TEL).execute().data
+print('aantal rijen voor dit nummer:', len(d))
+for r in d: print(' ', r)
+\""
+```
+
+Verwacht: **één** uitgaande rij (niet twee), met `status='new'`, `result=None`,
+de nieuwe `batch_id`, en `first_attempt` nog op de oude waarde.
 
 - [ ] **Step 5: Ruim de testleads op**
 
@@ -700,3 +760,302 @@ Nieuw memory-bestand in `~/.claude/projects/-Users-haruntekin-BotAgent/memory/`
 met de beslisregels en de gemeten aantallen (34.896 inbound-rijen zonder
 `first_attempt`, statussen `finished`/`new`/`in-progress`), plus een regel in
 `MEMORY.md`.
+
+---
+
+### Task 6: Hergebruiken in plaats van toevoegen
+
+**Waarom deze taak bestaat:** de eindreview van de hele tak vond dat taken 1-4 samen een
+kapotte periodemodus opleveren. `leads` heeft een unieke index op `phone` die alleen voor
+`direction='outbound'` geldt (gemeten: 60.000 rijen → 60.000 unieke nummers, nul dubbele;
+terwijl 142/150 inkomende nummers wél óók als uitgaande rij bestaan). Een nummer dat door
+de periodekeuze heen komt heeft per definitie al een uitgaande rij, dus een tweede rij
+toevoegen botst. Omdat er per 1000 wordt weggeschreven, laat één botsing de hele groep
+van 1000 mislukken. Zie de sectie "Toevoegen of hergebruiken" in de spec.
+
+**Files:**
+- Modify: `dashboard.py` — `bestaande_lead_info` (rond regel 216-248), de importlus
+  (rond regel 1375-1422), de uitslag-dict, en het leads-deel van `toon_import_resultaat`
+
+**Interfaces:**
+- Consumes: `beoordeel_nummer` (ongewijzigd — die blijft `"nieuw"` zeggen)
+- Produces: `bestaande_lead_info` geeft per nummer een extra sleutel `outbound_id`
+  (`int | None`); uitslag-dict krijgt een extra sleutel `heractief`
+
+- [ ] **Step 1: Laat `bestaande_lead_info` ook het id van de uitgaande rij teruggeven**
+
+In `dashboard.py`, in `bestaande_lead_info`: breid de select uit met `id` en `direction`,
+neem `outbound_id` op in de samenvatting, en werk de docstring bij.
+
+Vervang de select-regel:
+
+```python
+        res = supabase.table('leads') \
+            .select('phone,status,result,first_attempt,ended_at') \
+            .in_('phone', unique[i:i + chunk_size]).execute()
+```
+
+door:
+
+```python
+        res = supabase.table('leads') \
+            .select('id,phone,direction,status,result,first_attempt,ended_at') \
+            .in_('phone', unique[i:i + chunk_size]).execute()
+```
+
+Vervang de `setdefault`-regel:
+
+```python
+            huidig = gevonden.setdefault(
+                tel, {"sale": False, "open": False, "laatste_contact": None})
+```
+
+door:
+
+```python
+            huidig = gevonden.setdefault(
+                tel, {"sale": False, "open": False, "laatste_contact": None,
+                      "outbound_id": None})
+            # Er kan er maar één zijn (unieke index op phone voor outbound), maar
+            # bij twijfel houden we de laagste aan zodat het bepaald blijft.
+            if rij.get('direction') == 'outbound':
+                bestaand = huidig["outbound_id"]
+                if bestaand is None or rij['id'] < bestaand:
+                    huidig["outbound_id"] = rij['id']
+```
+
+En vervang in de docstring de regel:
+
+```python
+    Geeft: {phone: {'sale': bool, 'open': bool, 'laatste_contact': datetime|None}}
+```
+
+door:
+
+```python
+    Geeft: {phone: {'sale': bool, 'open': bool, 'laatste_contact': datetime|None,
+                    'outbound_id': int|None}}
+    outbound_id = de primaire sleutel van de uitgaande rij van dit nummer, als die
+    bestaat. Nodig omdat er maar ÉÉN uitgaande rij per nummer mag bestaan: bij
+    opnieuw importeren wordt die rij bijgewerkt in plaats van een tweede toegevoegd.
+```
+
+- [ ] **Step 2: Splits de importlus in toevoegen en bijwerken**
+
+Vervang dit blok:
+
+```python
+                    to_upload = []
+                    tellers = {"nieuw": 0, "blacklist": 0, "sale": 0,
+                               "nog_open": 0, "recent_contact": 0}
+                    c_inv = 0
+```
+
+door:
+
+```python
+                    to_upload = []   # nummers die nog geen uitgaande rij hebben
+                    to_update = []   # bestaande uitgaande rijen die weer belbaar worden
+                    tellers = {"nieuw": 0, "blacklist": 0, "sale": 0,
+                               "nog_open": 0, "recent_contact": 0}
+                    c_inv = 0
+```
+
+Vervang vervolgens dit blok:
+
+```python
+                            if oordeel == "nieuw":
+                                clean_naam = str(row[name_col]) if name_col and name_col != "Kies..." else "Klant"
+                                to_upload.append({
+                                    "phone": clean,
+                                    "name": clean_naam,
+                                    "status": "new",
+                                    "batch_id": batch_id,
+                                    "original_data": row.to_dict()
+                                })
+                                # Zelfde nummer verderop in het bestand telt als
+                                # 'nog open', want het staat nu in de wachtrij.
+                                lead_info[clean] = {"sale": False, "open": True,
+                                                    "laatste_contact": None}
+```
+
+door:
+
+```python
+                            if oordeel == "nieuw":
+                                clean_naam = str(row[name_col]) if name_col and name_col != "Kies..." else "Klant"
+                                bestaand = (lead_info.get(clean) or {}).get("outbound_id")
+                                velden = {
+                                    "phone": clean,
+                                    "name": clean_naam,
+                                    "status": "new",
+                                    "batch_id": batch_id,
+                                    "original_data": row.to_dict()
+                                }
+                                if bestaand is None:
+                                    to_upload.append(velden)
+                                else:
+                                    # Er mag maar één uitgaande rij per nummer bestaan,
+                                    # dus die bestaande rij wordt weer belbaar gemaakt.
+                                    # De belgeschiedenis blijft staan: een volgende
+                                    # import moet nog kunnen zien wanneer we belden.
+                                    to_update.append({**velden, "id": bestaand,
+                                                      "result": None})
+                                # Zelfde nummer verderop in het bestand telt als
+                                # 'nog open', want het staat nu in de wachtrij.
+                                lead_info[clean] = {"sale": False, "open": True,
+                                                    "laatste_contact": None,
+                                                    "outbound_id": bestaand}
+```
+
+- [ ] **Step 3: Schrijf de bijgewerkte rijen weg**
+
+Vervang dit blok:
+
+```python
+                    fouten = 0
+                    if to_upload:
+                        # Gewone insert: dubbele nummers zijn hierboven al
+                        # weggefilterd. upsert(on_conflict='phone') werkt niet
+                        # meer sinds de phone-constraint partieel is (alleen
+                        # outbound) → gaf Error 42P10 en stille mislukte imports.
+                        for i in range(0, len(to_upload), 1000):
+                            chunk = to_upload[i:i+1000]
+                            try:
+                                supabase.table('leads').insert(chunk).execute()
+                            except Exception as e:
+                                fouten += len(chunk)
+                                print(f"Batch fout: {e}")
+```
+
+door:
+
+```python
+                    fouten_nieuw = 0
+                    if to_upload:
+                        # Gewone insert: dubbele nummers zijn hierboven al
+                        # weggefilterd. upsert(on_conflict='phone') werkt niet
+                        # meer sinds de phone-constraint partieel is (alleen
+                        # outbound) → gaf Error 42P10 en stille mislukte imports.
+                        for i in range(0, len(to_upload), 1000):
+                            chunk = to_upload[i:i+1000]
+                            try:
+                                supabase.table('leads').insert(chunk).execute()
+                            except Exception as e:
+                                fouten_nieuw += len(chunk)
+                                print(f"Batch fout (insert): {e}")
+
+                    fouten_heractief = 0
+                    if to_update:
+                        # Bijwerken op de primaire sleutel: één verzoek per 1000
+                        # rijen, en tóch per rij een eigen naam en original_data.
+                        # on_conflict='phone' kan hier niet — die constraint is
+                        # partieel (alleen outbound) en geeft Error 42P10.
+                        for i in range(0, len(to_update), 1000):
+                            chunk = to_update[i:i+1000]
+                            try:
+                                supabase.table('leads').upsert(
+                                    chunk, on_conflict='id').execute()
+                            except Exception as e:
+                                fouten_heractief += len(chunk)
+                                print(f"Batch fout (heractief): {e}")
+
+                    fouten = fouten_nieuw + fouten_heractief
+```
+
+- [ ] **Step 4: Voeg `heractief` toe aan de uitslag**
+
+Vervang:
+
+```python
+                        "toegevoegd": tellers["nieuw"] - fouten,
+```
+
+door:
+
+```python
+                        "toegevoegd": len(to_upload) - fouten_nieuw,
+                        "heractief": len(to_update) - fouten_heractief,
+```
+
+Let op: `tellers["nieuw"]` is nog steeds `len(to_upload) + len(to_update)`, dus de
+optelling `toegevoegd + heractief + recent_contact + sale + nog_open + blacklist +
+ongeldig + mislukt == totaal` blijft kloppen.
+
+- [ ] **Step 5: Toon `heractief` in de pop-up**
+
+In `toon_import_resultaat`, leads-tak. Vervang:
+
+```python
+        a, b = st.columns(2)
+        a.metric("📄 Regels in bestand", r["totaal"])
+        b.metric("🆕 Toegevoegd aan wachtrij", r["toegevoegd"])
+```
+
+door:
+
+```python
+        a, b, i = st.columns(3)
+        a.metric("📄 Regels in bestand", r["totaal"])
+        b.metric("🆕 Nieuw toegevoegd", r["toegevoegd"],
+                 help="Nummers die nog niet in het systeem stonden.")
+        i.metric("♻️ Opnieuw belbaar", r["heractief"],
+                 help="Nummers die er al stonden en nu weer in de wachtrij zijn gezet.")
+```
+
+En vervang de twee plekken die alleen naar `toegevoegd` kijken:
+
+```python
+        elif r["toegevoegd"] == 0:
+```
+
+door:
+
+```python
+        elif r["toegevoegd"] + r["heractief"] == 0:
+```
+
+en:
+
+```python
+            st.success(f"{r['toegevoegd']} nieuwe leads staan nu in de wachtrij.")
+```
+
+door:
+
+```python
+            st.success(f"{r['toegevoegd'] + r['heractief']} leads staan nu in de wachtrij "
+                       f"({r['toegevoegd']} nieuw, {r['heractief']} opnieuw belbaar).")
+```
+
+- [ ] **Step 6: Controleer**
+
+Run: `cd ~/BotAgent/jordy-dashboard && python3 -m py_compile dashboard.py`
+Expected: geen uitvoer
+
+Run: `cd ~/BotAgent/jordy-dashboard && python3 -m pytest -q`
+Expected: PASS, 55 tests (deze taak raakt `import_logica.py` niet)
+
+Run: `cd ~/BotAgent/jordy-dashboard && grep -n 'r\["toegevoegd"\]\|fouten' dashboard.py`
+Expected: geen enkele verwijzing meer naar een kale `fouten` in het leads-pad behalve de
+optelling `fouten = fouten_nieuw + fouten_heractief`; het blacklist-pad heeft geen
+`fouten`.
+
+- [ ] **Step 7: Commit**
+
+```bash
+cd ~/BotAgent/jordy-dashboard
+git add dashboard.py docs/
+git commit -m "fix: bestaande rij hergebruiken i.p.v. tweede rij toevoegen
+
+leads heeft een unieke index op phone die alleen voor outbound geldt
+(gemeten: 60.000 rijen, 60.000 unieke nummers). Een nummer dat door de
+periodekeuze komt heeft dus al een uitgaande rij; een tweede toevoegen
+botst, en omdat er per 1000 wordt weggeschreven faalde dan de hele groep
+inclusief de echt nieuwe leads.
+
+Nu: bestaande uitgaande rij bijwerken via upsert op de primaire sleutel,
+alleen echt onbekende nummers worden toegevoegd. Aparte teller heractief.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
+```
