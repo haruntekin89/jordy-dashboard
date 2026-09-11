@@ -1635,15 +1635,29 @@ def _norm_kolom(s):
     return re.sub(r'[^a-z0-9]', '', str(s).lower())
 
 
+def _export_periode_utc(start_d, end_d):
+    """De gekozen periode als UTC-venster [start, eind) van hele NL-kalenderdagen.
+
+    ended_at staat in UTC, terwijl 'Van'/'Tot' Nederlandse datums zijn. Zonder
+    omrekening schoof elke dag ~1-2 uur op: gesprekken van vlak na middernacht
+    NL vielen in de vorige dag en het laatste stuk van de 'Tot'-dag ontbrak.
+    Zelfde omrekening als de dag-tellers bovenin (_nl_dag_utc_range)."""
+    s_iso, _ = _nl_dag_utc_range(str(start_d))
+    _, e_iso = _nl_dag_utc_range(str(end_d))
+    return s_iso, e_iso
+
+
 def _export_ophalen(soort, start_d, end_d):
     """Alle rijen voor één exportsoort, in blokken van 1000 opgehaald.
 
     Supabase geeft standaard maximaal 1000 rijen terug; de nabel-lijsten zijn
     doorgaans veel groter dan de succes-lijst, dus we pagineren expliciet."""
+    s_iso, e_iso = _export_periode_utc(start_d, end_d)
     rijen, stap, offset = [], 1000, 0
     while True:
+        # e_iso is middernacht van de dag ná 'Tot', dus exclusief: .lt, niet .lte.
         q = supabase.table('leads').select("*") \
-            .gte("ended_at", str(start_d)).lte("ended_at", str(end_d) + " 23:59:59")
+            .gte("ended_at", s_iso).lt("ended_at", e_iso)
         if soort == "succes":
             q = q.eq("result", "SUCCES")
         elif soort == "inbound_gemist":
@@ -1754,7 +1768,10 @@ with st.expander("📥 Export leads", expanded=False):
     start_d = col_d1.date_input("Van", value=date.today(), key="export_van")
     end_d = col_d2.date_input("Tot", value=date.today(), key="export_tot")
 
-    if st.button("Bestand maken", key="export_maak"):
+    if end_d < start_d:
+        st.warning("'Tot' ligt vóór 'Van' — kies een geldige periode.")
+
+    if st.button("Bestand maken", key="export_maak", disabled=(end_d < start_d)):
         try:
             df_exp = pd.DataFrame(_export_ophalen(soort, start_d, end_d))
 
