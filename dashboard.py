@@ -1648,10 +1648,17 @@ def _export_periode_utc(start_d, end_d):
 
 
 def _export_ophalen(soort, start_d, end_d):
-    """Alle rijen voor één exportsoort, in blokken van 1000 opgehaald.
+    """Alle rijen voor één exportsoort, in blokken opgehaald.
 
-    Supabase geeft standaard maximaal 1000 rijen terug; de nabel-lijsten zijn
-    doorgaans veel groter dan de succes-lijst, dus we pagineren expliciet."""
+    Supabase kapt een gewone query af op db-max-rows (standaard 1000); de
+    nabel-lijsten lopen daar makkelijk overheen, dus we halen blok na blok op
+    tot er niets meer terugkomt.
+
+    Bewust NIET 'blok kleiner dan gevraagd = klaar': staat db-max-rows lager
+    dan onze blokgrootte, dan is élk blok kleiner dan gevraagd en zouden we na
+    het eerste blok stoppen en de rest stilzwijgend laten liggen. We schuiven
+    daarom op met wat we werkelijk terugkregen en stoppen pas bij een leeg blok.
+    """
     s_iso, e_iso = _export_periode_utc(start_d, end_d)
     rijen, stap, offset = [], 1000, 0
     while True:
@@ -1668,11 +1675,14 @@ def _export_ophalen(soort, start_d, end_d):
             # voicemails en stille lijnen in de lijst en die zijn niet "gesproken".
             q = q.neq("direction", "inbound").eq("result", "MISLUKT") \
                  .in_("ended_reason", ECHT_GESPREK_REDENEN)
-        blok = q.order("ended_at").range(offset, offset + stap - 1).execute().data or []
-        rijen.extend(blok)
-        if len(blok) < stap:
+        # Op id mee sorteren: ended_at is niet uniek, en zonder vaste volgorde
+        # kan een rij op een blokgrens dubbel komen of juist wegvallen.
+        blok = q.order("ended_at").order("id") \
+            .range(offset, offset + stap - 1).execute().data or []
+        if not blok:
             break
-        offset += stap
+        rijen.extend(blok)
+        offset += len(blok)
     return rijen
 
 
