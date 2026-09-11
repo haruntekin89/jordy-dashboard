@@ -1556,123 +1556,312 @@ with st.expander("📂 Leads & Blacklist Importeren", expanded=False):
             st.error(f"Fout bij lezen bestand: {e}")
 
 # --- 10. EXPORT ---
-with st.expander("📥 Export Succesvolle Leads", expanded=False):
+# Naast de succesvolle leads moeten ook de andere uitkomsten uitgedraaid kunnen
+# worden: gemiste terugbellers (inbound) en mensen die we wél gesproken hebben
+# maar die geen interesse hadden. Die twee lijsten zijn bedoeld om handmatig na
+# te bellen, dus die krijgen een nabel-lijst i.p.v. het enquête-aanleverformaat.
+
+# Kolomnamen zoals ze in de aangeleverde bestanden kunnen staan -> onze vaste naam.
+EXPORT_COLUMN_VARIANTS = {
+    "phone":                 ["phone", "telefoon", "telefoonnummer", "tel", "mobiel", "gsm"],
+    "sex":                   ["sex", "geslacht", "gender", "geslacht_mv", "mv", "m_v"],
+    "initialen":             ["initialen", "initials", "voorletters"],
+    "naam":                  ["naam", "voornaam", "first_name", "firstname", "name", "roepnaam"],
+    "tussenvoegsel":         ["tussenvoegsel", "middle_name", "middlename", "tussen"],
+    "achternaam":            ["achternaam", "last_name", "lastname", "surname", "familienaam"],
+    "straat":                ["straat", "adres", "address", "street", "straatnaam"],
+    "huisnummer":            ["huisnummer", "huisnr", "house_number", "housenumber", "nr", "nummer"],
+    "huisnummer_toevoeging": ["huisnummer_toevoeging", "toevoeging", "huisnr_toevoeging", "addition", "huisnummertoevoeging"],
+    "postcode":              ["postcode", "zipcode", "postal_code", "zip"],
+    "stad":                  ["stad", "woonplaats", "plaats", "city"],
+    "email":                 ["email", "e-mail", "emailadres", "e-mailadres", "mail", "mailadres", "e_mail"],
+    "iban":                  ["iban", "iban_nummer", "iban_number", "bankrekening", "rekeningnummer"],
+    "geboortedatum":         ["geboortedatum", "geboorte", "birthdate", "birth_date", "dob", "date_of_birth"],
+}
+
+# Kolomvolgorde van het enquête-aanleverbestand (succes-export). Ongewijzigd:
+# de partij die dit bestand inleest verwacht precies deze kolommen.
+EXPORT_ORDER_SUCCES = ["enquete", "phone", "sex", "initialen", "naam", "tussenvoegsel",
+                       "achternaam", "straat", "huisnummer", "huisnummer_toevoeging",
+                       "postcode", "stad", "email", "iban", "geboortedatum", "enquete_datum",
+                       "original_data"]
+
+# Kolomvolgorde van de nabel-lijsten. Geen IBAN: die lijsten gaan niet naar de
+# opdrachtgever maar zijn om zelf mee te bellen, dus bankgegevens horen er niet in.
+EXPORT_ORDER_NABEL = ["datum", "phone", "sex", "initialen", "naam", "tussenvoegsel",
+                      "achternaam", "straat", "huisnummer", "huisnummer_toevoeging",
+                      "postcode", "stad", "email", "geboortedatum",
+                      "reden", "duur", "keer_overgegaan", "sip_status", "opname",
+                      "original_data"]
+
+# Label in het keuzemenu -> interne soort.
+EXPORT_SOORTEN = {
+    "✅ Succesvolle leads": "succes",
+    "📥 Inbound gemist (terugbellers die we niet te pakken kregen)": "inbound_gemist",
+    "🚫 Gesproken — geen interesse": "geen_interesse",
+}
+
+EXPORT_UITLEG = {
+    "succes": "Alle leads met resultaat SUCCES (inclusief terugbellers). "
+              "Dit is het aanleverbestand voor de enquête.",
+    "inbound_gemist": "Inkomende terugbellers die niet tot een gesprek leidden "
+                      "(direction = inbound, resultaat MISLUKT). Deze mensen "
+                      "belden zelf terug — de moeite waard om zelf opnieuw te bellen.",
+    "geen_interesse": "Uitbelgesprekken waarin écht een mens aan de lijn was "
+                      "(Jordy of de klant hing op) maar die niet op een sale "
+                      "uitkwamen. Dus geen voicemail, stille lijn of geen gehoor.",
+}
+
+EXPORT_LEEG = {
+    "succes": "Geen succesvolle leads gevonden.",
+    "inbound_gemist": "Geen gemiste inbound-gesprekken gevonden in deze periode.",
+    "geen_interesse": "Geen gesproken-maar-geen-interesse gesprekken gevonden in deze periode.",
+}
+
+EXPORT_BESTAND = {
+    "succes": "leads",
+    "inbound_gemist": "inbound_gemist",
+    "geen_interesse": "geen_interesse",
+}
+
+# Basisvelden uit de leads-tabel die we naast original_data willen meenemen.
+EXPORT_BASIS_COLS = ["phone", "name", "result", "ended_reason", "duration",
+                     "ring_count", "sip_status", "recording", "ended_at", "direction"]
+
+
+def _norm_kolom(s):
+    """Strip alle niet-alfanumerieke tekens zodat 'E-mailadres', 'e_mailadres'
+    en 'emailadres' allemaal naar 'emailadres' normaliseren."""
+    return re.sub(r'[^a-z0-9]', '', str(s).lower())
+
+
+def _export_periode_utc(start_d, end_d):
+    """De gekozen periode als UTC-venster [start, eind) van hele NL-kalenderdagen.
+
+    ended_at staat in UTC, terwijl 'Van'/'Tot' Nederlandse datums zijn. Zonder
+    omrekening schoof elke dag ~1-2 uur op: gesprekken van vlak na middernacht
+    NL vielen in de vorige dag en het laatste stuk van de 'Tot'-dag ontbrak.
+    Zelfde omrekening als de dag-tellers bovenin (_nl_dag_utc_range)."""
+    s_iso, _ = _nl_dag_utc_range(str(start_d))
+    _, e_iso = _nl_dag_utc_range(str(end_d))
+    return s_iso, e_iso
+
+
+def _export_ophalen(soort, start_d, end_d):
+    """Alle rijen voor één exportsoort, in blokken opgehaald.
+
+    Supabase kapt een gewone query af op db-max-rows (standaard 1000); de
+    nabel-lijsten lopen daar makkelijk overheen, dus we halen blok na blok op
+    tot er niets meer terugkomt.
+
+    Bewust NIET 'blok kleiner dan gevraagd = klaar': staat db-max-rows lager
+    dan onze blokgrootte, dan is élk blok kleiner dan gevraagd en zouden we na
+    het eerste blok stoppen en de rest stilzwijgend laten liggen. We schuiven
+    daarom op met wat we werkelijk terugkregen en stoppen pas bij een leeg blok.
+    """
+    s_iso, e_iso = _export_periode_utc(start_d, end_d)
+    rijen, stap, offset = [], 1000, 0
+    while True:
+        # e_iso is middernacht van de dag ná 'Tot', dus exclusief: .lt, niet .lte.
+        q = supabase.table('leads').select("*") \
+            .gte("ended_at", s_iso).lt("ended_at", e_iso)
+        if soort == "succes":
+            q = q.eq("result", "SUCCES")
+        elif soort == "inbound_gemist":
+            # Terugbellers die we niet te pakken kregen.
+            q = q.eq("direction", "inbound").eq("result", "MISLUKT")
+        elif soort == "geen_interesse":
+            # Alleen lijnen waar een mens daadwerkelijk iets zei — anders staan
+            # voicemails en stille lijnen in de lijst en die zijn niet "gesproken".
+            q = q.neq("direction", "inbound").eq("result", "MISLUKT") \
+                 .in_("ended_reason", ECHT_GESPREK_REDENEN)
+        # Op id mee sorteren: ended_at is niet uniek, en zonder vaste volgorde
+        # kan een rij op een blokgrens dubbel komen of juist wegvallen.
+        blok = q.order("ended_at").order("id") \
+            .range(offset, offset + stap - 1).execute().data or []
+        if not blok:
+            break
+        rijen.extend(blok)
+        offset += len(blok)
+    return rijen
+
+
+def _vul_original_data(df_exp):
+    """Terugbellers (inbound) krijgen een eigen rij zónder original_data; de
+    leadgegevens staan op de outbound-rij met hetzelfde nummer. Vul die hier aan,
+    anders blijven de kolommen in de export leeg."""
+    if df_exp.empty or 'original_data' not in df_exp.columns:
+        return df_exp
+    _leeg = df_exp['original_data'].apply(lambda v: not isinstance(v, dict) or not v)
+    _phones = df_exp.loc[_leeg, 'phone'].dropna().unique().tolist()
+    if not _phones:
+        return df_exp
+    # In stukjes opvragen: bij een gemiste-inbound-lijst kunnen dit er honderden
+    # zijn en dan wordt de .in_()-URL te lang.
+    _lookup = {}
+    for i in range(0, len(_phones), 200):
+        _src = supabase.table('leads').select("phone, original_data, ended_at") \
+            .in_("phone", _phones[i:i + 200]).not_.is_("original_data", "null").execute()
+        for _r in sorted(_src.data or [], key=lambda r: r.get('ended_at') or ""):
+            if isinstance(_r.get('original_data'), dict) and _r['original_data']:
+                _lookup[_r['phone']] = _r['original_data']
+    df_exp['original_data'] = df_exp.apply(
+        lambda row: _lookup.get(row['phone'])
+        if (not isinstance(row['original_data'], dict) or not row['original_data'])
+        else row['original_data'],
+        axis=1
+    )
+    return df_exp
+
+
+def _export_platslaan(df_exp):
+    """leads-rijen + de losse velden uit original_data naast elkaar in één tabel.
+
+    De kolom 'name' uit de leads-tabel gaat als '_lead_name' mee: 'name' staat
+    namelijk in EXPORT_COLUMN_VARIANTS als variant van 'naam' en zou anders de
+    voornaam uit original_data overschrijven."""
+    basis = [c for c in EXPORT_BASIS_COLS if c in df_exp.columns]
+    df_basis = df_exp[basis].reset_index(drop=True).rename(columns={"name": "_lead_name"})
+    if 'original_data' not in df_exp.columns:
+        return df_basis
+    schoon = df_exp['original_data'].apply(lambda v: v if isinstance(v, dict) else {})
+    json_data = pd.json_normalize(schoon).reset_index(drop=True)
+    return pd.concat([df_basis, json_data], axis=1)
+
+
+def _map_leadvelden(df_raw):
+    """Zet de wisselend genoemde kolommen uit original_data om naar onze vaste
+    kolomnamen. Velden die niet voorkomen worden lege tekst."""
+    norm_map = {col: _norm_kolom(col) for col in df_raw.columns}
+    df_final = pd.DataFrame(index=df_raw.index)
+    for canonical, variants in EXPORT_COLUMN_VARIANTS.items():
+        variant_set = {_norm_kolom(v) for v in variants}
+        matching = [col for col, n in norm_map.items() if n in variant_set]
+        if matching:
+            series = df_raw[matching].replace("", pd.NA).bfill(axis=1).iloc[:, 0]
+            df_final[canonical] = series.fillna("")
+        else:
+            df_final[canonical] = ""
+    return df_final
+
+
+def _heel_getal(v):
+    """Getal als nette tekst ('2', niet '2.0'); leeg bij een ontbrekende waarde.
+    Een kolom met NULLs wordt door pandas float, en '2.0' leest raar in Excel."""
+    try:
+        if v is None or pd.isna(v):
+            return ""
+        return str(int(v))
+    except Exception:
+        return str(v)
+
+
+def _nl_datumkolom(df_raw, fmt):
+    """ended_at (UTC) -> Nederlandse tijd als tekst, of lege tekst."""
+    if 'ended_at' not in df_raw.columns:
+        return ""
+    _ed = pd.to_datetime(df_raw['ended_at'], errors='coerce', utc=True)
+    try:
+        _ed = _ed.dt.tz_convert('Europe/Amsterdam')
+    except Exception:
+        pass
+    return _ed.dt.strftime(fmt).fillna("")
+
+
+with st.expander("📥 Export leads", expanded=False):
+    soort_label = st.selectbox("Wat wil je exporteren?", list(EXPORT_SOORTEN.keys()),
+                               key="export_soort")
+    soort = EXPORT_SOORTEN[soort_label]
+    st.caption(EXPORT_UITLEG[soort])
+
     col_d1, col_d2 = st.columns(2)
-    start_d = col_d1.date_input("Van", value=date.today())
-    end_d = col_d2.date_input("Tot", value=date.today())
+    start_d = col_d1.date_input("Van", value=date.today(), key="export_van")
+    end_d = col_d2.date_input("Tot", value=date.today(), key="export_tot")
 
-    if st.button("Download Excel"):
+    if end_d < start_d:
+        st.warning("'Tot' ligt vóór 'Van' — kies een geldige periode.")
+
+    if st.button("Bestand maken", key="export_maak", disabled=(end_d < start_d)):
         try:
-            res = supabase.table('leads').select("*").eq("result", "SUCCES") \
-                .gte("ended_at", str(start_d)).lte("ended_at", str(end_d) + " 23:59:59").execute()
+            df_exp = pd.DataFrame(_export_ophalen(soort, start_d, end_d))
 
-            df_exp = pd.DataFrame(res.data)
+            if df_exp.empty:
+                st.warning(EXPORT_LEEG[soort])
+            else:
+                df_exp = _vul_original_data(df_exp)
+                df_raw = _export_platslaan(df_exp)
+                df_final = _map_leadvelden(df_raw)
 
-            # Terugbellers (inbound) krijgen een eigen rij zónder original_data;
-            # de leadgegevens staan op de outbound-rij met hetzelfde nummer.
-            # Vul die hier aan, anders blijven de kolommen in de export leeg.
-            if not df_exp.empty and 'original_data' in df_exp.columns:
-                _leeg = df_exp['original_data'].apply(lambda v: not isinstance(v, dict) or not v)
-                _phones = df_exp.loc[_leeg, 'phone'].dropna().unique().tolist()
-                if _phones:
-                    _src = supabase.table('leads').select("phone, original_data, ended_at") \
-                        .in_("phone", _phones).not_.is_("original_data", "null").execute()
-                    _lookup = {}
-                    for _r in sorted(_src.data, key=lambda r: r.get('ended_at') or ""):
-                        if isinstance(_r.get('original_data'), dict) and _r['original_data']:
-                            _lookup[_r['phone']] = _r['original_data']
-                    df_exp['original_data'] = df_exp.apply(
-                        lambda row: _lookup.get(row['phone'])
-                        if (not isinstance(row['original_data'], dict) or not row['original_data'])
-                        else row['original_data'],
-                        axis=1
-                    )
+                if soort == "succes":
+                    df_final.insert(0, "enquete", "telefonische enquete vrije tijd en ontspanning")
+                    df_final['enquete_datum'] = _nl_datumkolom(df_raw, '%d-%m-%Y')
 
-            if not df_exp.empty:
-                if 'original_data' in df_exp.columns:
-                    json_data = pd.json_normalize(df_exp['original_data'])
-                    df_raw = pd.concat([df_exp[['phone', 'result', 'duration', 'recording', 'ended_at']], json_data], axis=1)
+                    # Voeg ruwe original_data als JSON-string toe ter controle.
+                    if 'original_data' in df_exp.columns:
+                        df_final['original_data'] = df_exp['original_data'].reset_index(drop=True).apply(
+                            lambda v: json.dumps(v, ensure_ascii=False) if v is not None else ""
+                        )
+
+                    df_final = df_final[[c for c in EXPORT_ORDER_SUCCES if c in df_final.columns]]
+
+                    # Controle: meld per rij welke verplichte velden leeg zijn gebleven
+                    # terwijl original_data wel iets bevatte — dat duidt op een mismatch
+                    # in EXPORT_COLUMN_VARIANTS en moet onderzocht worden.
+                    check_cols = [c for c in ["sex", "initialen", "naam", "achternaam",
+                                               "straat", "huisnummer", "postcode", "stad",
+                                               "email", "iban", "geboortedatum"]
+                                  if c in df_final.columns]
+                    missing_report = []
+                    for idx, row in df_final.iterrows():
+                        leeg = [c for c in check_cols if not str(row[c]).strip()]
+                        if leeg:
+                            phone = row.get("phone", "")
+                            missing_report.append(f"• {phone}: leeg → {', '.join(leeg)}")
+                    if missing_report:
+                        st.warning("Let op — sommige velden zijn leeg gebleven na mapping. "
+                                   "Controleer `original_data` in de Excel:\n" + "\n".join(missing_report[:20]))
+
                 else:
-                    df_raw = df_exp
+                    # Nabel-lijst: datum/tijd + waarom het gesprek eindigde, zodat je
+                    # ziet wat er gebeurd is voordat je opnieuw belt.
+                    df_final.insert(0, "datum", _nl_datumkolom(df_raw, '%d-%m-%Y %H:%M'))
 
-                COLUMN_VARIANTS = {
-                    "phone":                 ["phone", "telefoon", "telefoonnummer", "tel", "mobiel", "gsm"],
-                    "sex":                   ["sex", "geslacht", "gender", "geslacht_mv", "mv", "m_v"],
-                    "initialen":             ["initialen", "initials", "voorletters"],
-                    "naam":                  ["naam", "voornaam", "first_name", "firstname", "name", "roepnaam"],
-                    "tussenvoegsel":         ["tussenvoegsel", "middle_name", "middlename", "tussen"],
-                    "achternaam":            ["achternaam", "last_name", "lastname", "surname", "familienaam"],
-                    "straat":                ["straat", "adres", "address", "street", "straatnaam"],
-                    "huisnummer":            ["huisnummer", "huisnr", "house_number", "housenumber", "nr", "nummer"],
-                    "huisnummer_toevoeging": ["huisnummer_toevoeging", "toevoeging", "huisnr_toevoeging", "addition", "huisnummertoevoeging"],
-                    "postcode":              ["postcode", "zipcode", "postal_code", "zip"],
-                    "stad":                  ["stad", "woonplaats", "plaats", "city"],
-                    "email":                 ["email", "e-mail", "emailadres", "e-mailadres", "mail", "mailadres", "e_mail"],
-                    "iban":                  ["iban", "iban_nummer", "iban_number", "bankrekening", "rekeningnummer"],
-                    "geboortedatum":         ["geboortedatum", "geboorte", "birthdate", "birth_date", "dob", "date_of_birth"],
-                }
-                EXPORT_ORDER = ["enquete", "phone", "sex", "initialen", "naam", "tussenvoegsel",
-                                "achternaam", "straat", "huisnummer", "huisnummer_toevoeging",
-                                "postcode", "stad", "email", "iban", "geboortedatum", "enquete_datum",
-                                "original_data"]
+                    # Zonder original_data blijft 'naam' leeg; val dan terug op de
+                    # naam die bij het gesprek in de leads-tabel staat.
+                    if '_lead_name' in df_raw.columns:
+                        _leeg_naam = df_final['naam'].astype(str).str.strip() == ""
+                        df_final.loc[_leeg_naam, 'naam'] = df_raw.loc[_leeg_naam, '_lead_name'].fillna("")
 
-                # Strip alle niet-alfanumerieke tekens zodat 'E-mailadres', 'e_mailadres'
-                # en 'emailadres' allemaal naar 'emailadres' normaliseren.
-                def _norm(s):
-                    return re.sub(r'[^a-z0-9]', '', str(s).lower())
+                    df_final['reden'] = (df_raw['ended_reason'].fillna("")
+                                         if 'ended_reason' in df_raw.columns else "")
+                    df_final['duur'] = (df_raw['duration'].apply(_fmt_duur)
+                                        if 'duration' in df_raw.columns else "")
+                    df_final['keer_overgegaan'] = (df_raw['ring_count'].apply(_heel_getal)
+                                                   if 'ring_count' in df_raw.columns else "")
+                    df_final['sip_status'] = (df_raw['sip_status'].fillna("")
+                                              if 'sip_status' in df_raw.columns else "")
+                    # Alleen de bestandsnaam: opnames zitten achter een token en
+                    # zijn dus niet als losse link te openen vanuit Excel.
+                    df_final['opname'] = (df_raw['recording'].fillna("")
+                                          if 'recording' in df_raw.columns else "")
 
-                norm_map = {col: _norm(col) for col in df_raw.columns}
-                df_final = pd.DataFrame(index=df_raw.index)
-                for canonical, variants in COLUMN_VARIANTS.items():
-                    variant_set = {_norm(v) for v in variants}
-                    matching = [col for col, n in norm_map.items() if n in variant_set]
-                    if matching:
-                        series = df_raw[matching].replace("", pd.NA).bfill(axis=1).iloc[:, 0]
-                        df_final[canonical] = series.fillna("")
-                    else:
-                        df_final[canonical] = ""
+                    if 'original_data' in df_exp.columns:
+                        df_final['original_data'] = df_exp['original_data'].reset_index(drop=True).apply(
+                            lambda v: json.dumps(v, ensure_ascii=False) if v else ""
+                        )
 
-                df_final.insert(0, "enquete", "telefonische enquete vrije tijd en ontspanning")
-                if 'ended_at' in df_raw.columns:
-                    _ed = pd.to_datetime(df_raw['ended_at'], errors='coerce', utc=True)
-                    try:
-                        _ed = _ed.dt.tz_convert('Europe/Amsterdam')
-                    except Exception:
-                        pass
-                    df_final['enquete_datum'] = _ed.dt.strftime('%d-%m-%Y')
-
-                # Voeg ruwe original_data als JSON-string toe ter controle.
-                if 'original_data' in df_exp.columns:
-                    df_final['original_data'] = df_exp['original_data'].apply(
-                        lambda v: json.dumps(v, ensure_ascii=False) if v is not None else ""
-                    )
-
-                df_final = df_final[[c for c in EXPORT_ORDER if c in df_final.columns]]
-
-                # Controle: meld per rij welke verplichte velden leeg zijn gebleven
-                # terwijl original_data wel iets bevatte — dat duidt op een mismatch
-                # in COLUMN_VARIANTS en moet onderzocht worden.
-                check_cols = [c for c in ["sex", "initialen", "naam", "achternaam",
-                                           "straat", "huisnummer", "postcode", "stad",
-                                           "email", "iban", "geboortedatum"]
-                              if c in df_final.columns]
-                missing_report = []
-                for idx, row in df_final.iterrows():
-                    leeg = [c for c in check_cols if not str(row[c]).strip()]
-                    if leeg:
-                        phone = row.get("phone", "")
-                        missing_report.append(f"• {phone}: leeg → {', '.join(leeg)}")
-                if missing_report:
-                    st.warning("Let op — sommige velden zijn leeg gebleven na mapping. "
-                               "Controleer `original_data` in de Excel:\n" + "\n".join(missing_report[:20]))
+                    df_final = df_final[[c for c in EXPORT_ORDER_NABEL if c in df_final.columns]]
 
                 buffer = io.BytesIO()
                 with pd.ExcelWriter(buffer, engine='xlsxwriter') as writer:
                     df_final.to_excel(writer, index=False)
 
-                st.download_button("⬇️ Download Excel", buffer, f"leads_{start_d}.xlsx", "application/vnd.ms-excel")
-            else:
-                st.warning("Geen succesvolle leads gevonden.")
+                st.success(f"{len(df_final)} rijen klaar om te downloaden.")
+                st.download_button(
+                    "⬇️ Download Excel", buffer,
+                    f"{EXPORT_BESTAND[soort]}_{start_d}_{end_d}.xlsx",
+                    "application/vnd.ms-excel",
+                    key="export_download")
 
         except Exception as e:
             st.error(f"Fout: {e}")
