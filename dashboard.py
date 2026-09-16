@@ -328,9 +328,15 @@ REDEN_FILTERS = {
 def cached_batches_overzicht(van_iso, tot_iso):
     # Server-side aggregatie via Postgres RPC — alle batchcijfers in één query,
     # voor de gekozen periode (van/tot zijn datum-ISO, bv. "2026-06-23").
+    # De database slaat ended_at in UTC op; we rekenen de grenzen om naar hele
+    # Nederlandse kalenderdagen, zodat bv. "Vorige maand" exact de maand telt
+    # zoals hij ook op de CM-factuur staat (en niet ~2 uur verschoven).
+    van_ts, _ = _nl_dag_utc_range(van_iso)
+    _, tot_eind = _nl_dag_utc_range(tot_iso)
+    tot_ts = (datetime.fromisoformat(tot_eind) - timedelta(seconds=1)).isoformat()
     res = supabase.rpc('batches_overzicht', {
-        "van": f"{van_iso} 00:00:00",
-        "tot": f"{tot_iso} 23:59:59",
+        "van": van_ts,
+        "tot": tot_ts,
     }).execute()
     return res.data or []
 
@@ -1170,8 +1176,9 @@ with st.expander("📊 Batch Rapportage", expanded=False):
     # --- Periodekiezer (werkt op de hele tabel) ---
     periode = st.selectbox(
         "Periode",
-        ["Vandaag", "Laatste 7 dagen", "Laatste 30 dagen", "Hele looptijd", "Zelf datum kiezen"],
-        index=3,
+        ["Vandaag", "Laatste 7 dagen", "Laatste 30 dagen", "Deze maand",
+         "Vorige maand", "Hele looptijd", "Zelf datum kiezen"],
+        index=5,
         key="batch_periode",
     )
     if periode == "Vandaag":
@@ -1180,6 +1187,13 @@ with st.expander("📊 Batch Rapportage", expanded=False):
         van_d, tot_d = vandaag_d - pd.Timedelta(days=6), vandaag_d
     elif periode == "Laatste 30 dagen":
         van_d, tot_d = vandaag_d - pd.Timedelta(days=29), vandaag_d
+    elif periode == "Deze maand":
+        van_d, tot_d = vandaag_d.replace(day=1), vandaag_d
+    elif periode == "Vorige maand":
+        # Kalendermaand — zelfde afbakening als een CM-factuurmaand.
+        eerste_deze = vandaag_d.replace(day=1)
+        tot_d = eerste_deze - timedelta(days=1)
+        van_d = tot_d.replace(day=1)
     elif periode == "Zelf datum kiezen":
         col_van, col_tot = st.columns(2)
         van_d = col_van.date_input("Van", value=vandaag_d - pd.Timedelta(days=6),
@@ -1196,6 +1210,21 @@ with st.expander("📊 Batch Rapportage", expanded=False):
         st.error(f"Kan batches niet ophalen: {e}. Heb je de nieuwe RPC-functie "
                  "'batches_overzicht(van, tot)' al in Supabase gedraaid?")
         batches_data = []
+
+    # --- Belminuten-totaal over alle batches samen ---
+    # Dit is de opgetelde gespreksduur van Jordy in de gekozen periode: de
+    # minuten die ook bij CM.com op de teller staan (inkomend + uitgaand).
+    totaal_sec = sum(int(b.get("gebelde_tijd_sec") or 0) for b in batches_data)
+    totaal_gesprekken = sum(int(b.get("afgehandeld") or 0) for b in batches_data)
+    m1, m2, m3 = st.columns(3)
+    m1.metric("Belminuten", f"{round(totaal_sec / 60):,}".replace(",", "."))
+    m2.metric("Gebelde tijd", _fmt_duur_lang(totaal_sec))
+    m3.metric("Gesprekken", f"{totaal_gesprekken:,}".replace(",", "."))
+    st.caption(f"Periode {van_d.strftime('%d-%m-%Y')} t/m {tot_d.strftime('%d-%m-%Y')} "
+               "(Nederlandse tijd). Belminuten = alle gespreksduur van Jordy bij "
+               "elkaar opgeteld, inkomend én uitgaand. CM factureert per gesprek "
+               "en rondt mogelijk per gesprek af, dus de factuur kan iets hoger "
+               "uitvallen dan dit totaal.")
 
     if not batches_data:
         st.info("Nog geen leads in de database.")
